@@ -26,7 +26,6 @@ update:owner,"Project, User",Organization,"None, Assignee",,PATCH,/projects/{id}
 update:owner,"Project, User",Organization,Owner,,PATCH,/projects/{id},Worker,Maintainer
 export:annotations,Project,Sandbox,None,,GET,/projects/{id}/annotations,Admin,N/A
 export:annotations,Project,Sandbox,"Owner, Assignee",,GET,/projects/{id}/annotations,None,N/A
-export:annotations,Project,Organization,"Owner, Assignee",,GET,/projects/{id}/annotations,None,Worker
 export:annotations,Project,Organization,None,,GET,/projects/{id}/annotations,User,Maintainer
 export:dataset,Project,Sandbox,None,,GET,/projects/{id}/dataset,Admin,N/A
 export:dataset,Project,Sandbox,"Owner, Assignee",,GET,/projects/{id}/dataset,None,N/A

@@ -77,7 +77,6 @@ import:annotations,Task,Organization,"Owner, Project:owner, Assignee, Project:as
 export:annotations,Task,Sandbox,None,,GET,/tasks/{id}/annotations?format=,Admin,N/A
 export:annotations,Task,Sandbox,"Owner, Project:owner, Assignee, Project:assignee",,GET,/tasks/{id}/annotations?format=,None,N/A
 export:annotations,Task,Organization,None,,GET,/tasks/{id}/annotations?format=,User,Maintainer
-export:annotations,Task,Organization,"Owner, Project:owner, Assignee, Project:assignee",,GET,/tasks/{id}/annotations?format=,None,Worker
 export:backup,Task,Sandbox,None,,GET,/tasks/{id}/backup,Admin,N/A
 export:backup,Task,Sandbox,"Owner, Project:owner, Assignee, Project:assignee",,GET,/tasks/{id}/backup,None,N/A
 export:backup,Task,Organization,None,,GET,/tasks/{id}/backup,User,Maintainer

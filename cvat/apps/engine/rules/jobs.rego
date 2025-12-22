@@ -202,11 +202,20 @@ allow if {
 allow if {
     input.scope in {
         utils.VIEW,
-        utils.EXPORT_DATASET, utils.EXPORT_ANNOTATIONS,
+        utils.EXPORT_DATASET,
         utils.VIEW_ANNOTATIONS, utils.VIEW_DATA, utils.VIEW_METADATA
     }
     input.auth.organization.id == input.resource.organization.id
     organizations.has_perm(organizations.WORKER)
+    is_job_staff
+}
+
+allow if {
+    # Do not allow organization Workers to export annotations even if they are job staff.
+    # Supervisors and higher (including Maintainers/Owners) are allowed.
+    input.scope == utils.EXPORT_ANNOTATIONS
+    input.auth.organization.id == input.resource.organization.id
+    organizations.has_perm(organizations.SUPERVISOR)
     is_job_staff
 }
 

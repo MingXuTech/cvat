@@ -218,7 +218,7 @@ allow if {
 }
 
 allow if {
-    input.scope in {utils.EXPORT_ANNOTATIONS, utils.EXPORT_DATASET, utils.EXPORT_BACKUP}
+    input.scope in {utils.EXPORT_DATASET, utils.EXPORT_BACKUP}
     input.auth.organization.id == input.resource.organization.id
     organizations.is_member
     is_project_staff
@@ -229,6 +229,15 @@ allow if {
     input.auth.organization.id == input.resource.organization.id
     utils.has_perm(utils.USER)
     organizations.has_perm(organizations.MAINTAINER)
+}
+
+allow if {
+    # Do not allow organization Workers to export annotations even if they are project staff.
+    # Supervisors and higher (including Maintainers/Owners) are allowed.
+    input.scope == utils.EXPORT_ANNOTATIONS
+    input.auth.organization.id == input.resource.organization.id
+    organizations.has_perm(organizations.SUPERVISOR)
+    is_project_staff
 }
 
 allow if {

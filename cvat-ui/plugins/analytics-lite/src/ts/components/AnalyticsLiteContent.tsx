@@ -11,8 +11,18 @@ import Button from 'antd/lib/button';
 import Select from 'antd/lib/select';
 import Descriptions from 'antd/lib/descriptions';
 import Text from 'antd/lib/typography/Text';
+import Card from 'antd/lib/card';
+import Space from 'antd/lib/space';
+import Empty from 'antd/lib/empty';
 import notification from 'antd/lib/notification';
-import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+    DownloadOutlined,
+    ReloadOutlined,
+    BarChartOutlined,
+    ClockCircleOutlined,
+    TeamOutlined,
+    ExperimentOutlined,
+} from '@ant-design/icons';
 
 import { getCore, Project, Task, Job } from 'cvat-core-wrapper';
 import { TimePeriod } from 'components/analytics-report';
@@ -30,6 +40,19 @@ function getResourceKind(resource: Project | Task | Job): ResourceKind {
     if (resource instanceof Task) return 'task';
     return 'job';
 }
+
+const jsonStyle: React.CSSProperties = {
+    maxHeight: 520,
+    overflow: 'auto',
+    background: '#111827',
+    color: '#e5e7eb',
+    padding: 16,
+    borderRadius: 8,
+    fontSize: 12,
+    fontFamily: 'Menlo, Monaco, Consolas, "Courier New", monospace',
+    border: '1px solid #374151',
+    marginTop: 8,
+};
 
 function AnalyticsLiteContent(props: Props): JSX.Element {
     const { resource, timePeriod } = props;
@@ -247,275 +270,300 @@ function AnalyticsLiteContent(props: Props): JSX.Element {
     }, [resource.id, kind]);
 
     const header = (
-        <Descriptions size='small' column={1} bordered>
-            <Descriptions.Item label='资源类型'>{kind}</Descriptions.Item>
-            <Descriptions.Item label='ID'>{resource.id}</Descriptions.Item>
-            {'name' in resource ? (
-                <Descriptions.Item label='Name'>{(resource as any).name}</Descriptions.Item>
-            ) : null}
-            <Descriptions.Item label='Time period'>
-                {timePeriod ? `${timePeriod.startDate} ~ ${timePeriod.endDate}` : '未选择'}
-            </Descriptions.Item>
-        </Descriptions>
+        <Card size='small' bordered={false} style={{ background: '#f5f5f5' }}>
+            <Descriptions size='small' column={2} bordered>
+                <Descriptions.Item label='Resource Type'>{kind.toUpperCase()}</Descriptions.Item>
+                <Descriptions.Item label='ID'>{resource.id}</Descriptions.Item>
+                {'name' in resource ? (
+                    <Descriptions.Item label='Name'>{(resource as any).name}</Descriptions.Item>
+                ) : null}
+                <Descriptions.Item label='Time period'>
+                    {timePeriod ? `${timePeriod.startDate} ~ ${timePeriod.endDate}` : 'All Time'}
+                </Descriptions.Item>
+            </Descriptions>
+        </Card>
     );
 
     const items = [
         {
             key: 'quality',
-            label: 'Quality',
+            label: (
+                <Space>
+                    <BarChartOutlined />
+                    Quality
+                </Space>
+            ),
             children: (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <Button
-                            icon={<ReloadOutlined />}
-                            onClick={loadReports}
-                            disabled={qualityLoading}
-                        >
-                            刷新报表列表
-                        </Button>
-                        <Text type='secondary'>
-                            优先复用后端 `/api/quality/*`；首期只做读取与展示
-                        </Text>
-                    </div>
-
-                    {qualityError ? <Alert type='error' message={qualityError} /> : null}
-
-                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                        <Text>Report:</Text>
-                        <Select<number>
-                            style={{ minWidth: 320 }}
-                            loading={qualityLoading}
-                            value={selectedReportId ?? undefined}
-                            placeholder='选择一个 report'
-                            onChange={(val: number) => setSelectedReportId(val)}
-                            options={reports.map((r: any) => ({
-                                value: r.id,
-                                label: `#${r.id} (${r.target || 'unknown'})`,
-                            }))}
-                        />
-                        <Button
-                            icon={<ReloadOutlined />}
-                            disabled={!selectedReportId}
-                            loading={reportDataLoading}
-                            onClick={() => selectedReportId && loadReportData(selectedReportId)}
-                        >
-                            刷新 report data
-                        </Button>
-                        <Button
-                            icon={<ReloadOutlined />}
-                            disabled={!selectedReportId}
-                            loading={conflictsLoading}
-                            onClick={() => selectedReportId && loadConflicts(selectedReportId)}
-                        >
-                            刷新 conflicts
-                        </Button>
-                    </div>
-
-                    {qualityLoading ? <Spin /> : null}
-
-                    {reportDataLoading ? <Spin /> : null}
-
-                    {reportData ? (
-                        <pre style={{
-                            maxHeight: 520,
-                            overflow: 'auto',
-                            background: '#111827',
-                            color: '#e5e7eb',
-                            padding: 12,
-                            borderRadius: 6,
-                            fontSize: 12,
-                        }}
-                        >
-                            {JSON.stringify(reportData, null, 2)}
-                        </pre>
-                    ) : null}
-
-                    {conflictsLoading ? <Spin /> : null}
-                    {conflicts ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            <Text strong>{`Conflicts: ${conflicts.length}`}</Text>
-                            <pre style={{
-                                maxHeight: 320,
-                                overflow: 'auto',
-                                background: '#111827',
-                                color: '#e5e7eb',
-                                padding: 12,
-                                borderRadius: 6,
-                                fontSize: 12,
-                            }}
+                <Space direction='vertical' size='middle' style={{ width: '100%' }}>
+                    <Card size='small'>
+                        <Space wrap>
+                            <Button
+                                icon={<ReloadOutlined />}
+                                onClick={loadReports}
+                                disabled={qualityLoading}
                             >
-                                {JSON.stringify(conflicts.slice(0, 200), null, 2)}
-                            </pre>
-                            {conflicts.length > 200 ? (
-                                <Text type='secondary'>仅展示前 200 条（避免页面卡顿）</Text>
-                            ) : null}
+                                刷新列表
+                            </Button>
+                            <Text>Report:</Text>
+                            <Select<number>
+                                style={{ minWidth: 250 }}
+                                loading={qualityLoading}
+                                value={selectedReportId ?? undefined}
+                                placeholder='Select a report'
+                                onChange={(val: number) => setSelectedReportId(val)}
+                                options={reports.map((r: any) => ({
+                                    value: r.id,
+                                    label: `#${r.id} (${r.target || 'unknown'}) - ${new Date(r.createdDate).toLocaleString()}`,
+                                }))}
+                            />
+                            {selectedReportId && (
+                                <>
+                                    <Button
+                                        icon={<ReloadOutlined />}
+                                        loading={reportDataLoading}
+                                        onClick={() => loadReportData(selectedReportId)}
+                                    >
+                                        刷新 Data
+                                    </Button>
+                                    <Button
+                                        icon={<ReloadOutlined />}
+                                        loading={conflictsLoading}
+                                        onClick={() => loadConflicts(selectedReportId)}
+                                    >
+                                        刷新 Conflicts
+                                    </Button>
+                                </>
+                            )}
+                        </Space>
+                        <div style={{ marginTop: 8 }}>
+                            <Text type='secondary' style={{ fontSize: 12 }}>
+                                * 优先复用后端 `/api/quality/*`
+                            </Text>
                         </div>
-                    ) : null}
-                </div>
+                    </Card>
+
+                    {qualityError && <Alert type='error' message={qualityError} showIcon />}
+                    {qualityLoading && <Spin tip='Loading reports...' />}
+
+                    {selectedReportId ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                            <Card
+                                size='small'
+                                title='Report Data'
+                                extra={reportDataLoading && <Spin size='small' />}
+                            >
+                                {reportData ? (
+                                    <pre style={jsonStyle}>
+                                        {JSON.stringify(reportData, null, 2)}
+                                    </pre>
+                                ) : (
+                                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 Report Data' />
+                                )}
+                            </Card>
+
+                            <Card
+                                size='small'
+                                title={`Conflicts (${conflicts?.length ?? 0})`}
+                                extra={conflictsLoading && <Spin size='small' />}
+                            >
+                                {conflicts && conflicts.length > 0 ? (
+                                    <>
+                                        <pre style={jsonStyle}>
+                                            {JSON.stringify(conflicts.slice(0, 200), null, 2)}
+                                        </pre>
+                                        {conflicts.length > 200 && (
+                                            <Text type='secondary'>仅展示前 200 条（避免页面卡顿）</Text>
+                                        )}
+                                    </>
+                                ) : (
+                                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 Conflicts' />
+                                )}
+                            </Card>
+                        </div>
+                    ) : (
+                        !qualityLoading && <Empty description='请选择一个 Report 查看详情' />
+                    )}
+                </Space>
             ),
         },
         {
             key: 'events',
-            label: 'Activity (Events)',
+            label: (
+                <Space>
+                    <ClockCircleOutlined />
+                    Activity
+                </Space>
+            ),
             children: (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <Space direction='vertical' size='middle' style={{ width: '100%' }}>
                     <Alert
                         type='info'
+                        showIcon
                         message='首期仅提供导出 Events'
                         description='后端目前主要提供 CSV 导出（/api/events 或 /api/events/export），没有稳定的 JSON 聚合接口；首期先用导出满足排查/核对需求，统计面板作为二期。'
                     />
-                    <Descriptions size='small' column={1} bordered>
-                        <Descriptions.Item label='Filter'>
-                            {kind === 'project' ? `project_id=${resource.id}` : null}
-                            {kind === 'task' ? `task_id=${resource.id}` : null}
-                            {kind === 'job' ? `job_id=${resource.id}` : null}
-                        </Descriptions.Item>
-                        <Descriptions.Item label='Time period'>
-                            {timePeriod ? `${timePeriod.startDate} ~ ${timePeriod.endDate}` : '未选择'}
-                        </Descriptions.Item>
-                    </Descriptions>
-                    <Button
-                        type='primary'
-                        icon={<DownloadOutlined />}
-                        loading={exportingEvents}
-                        onClick={exportEvents}
-                    >
-                        导出 Events CSV
-                    </Button>
-                </div>
+                    <Card size='small' title='Export Events'>
+                        <Descriptions size='small' column={1} bordered>
+                            <Descriptions.Item label='Filter Scope'>
+                                {kind === 'project' ? `project_id=${resource.id}` : null}
+                                {kind === 'task' ? `task_id=${resource.id}` : null}
+                                {kind === 'job' ? `job_id=${resource.id}` : null}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='Time period'>
+                                {timePeriod ? `${timePeriod.startDate} ~ ${timePeriod.endDate}` : 'All Time'}
+                            </Descriptions.Item>
+                        </Descriptions>
+                        <div style={{ marginTop: 16 }}>
+                            <Button
+                                type='primary'
+                                icon={<DownloadOutlined />}
+                                loading={exportingEvents}
+                                onClick={exportEvents}
+                            >
+                                导出 Events CSV
+                            </Button>
+                        </div>
+                    </Card>
+                </Space>
             ),
         },
         {
             key: 'consensus',
-            label: 'Consensus',
+            label: (
+                <Space>
+                    <TeamOutlined />
+                    Consensus
+                </Space>
+            ),
             children: (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <Space direction='vertical' size='middle' style={{ width: '100%' }}>
                     <Alert
                         type='info'
-                        message='Consensus 用于 replicas 一致性与合并（quorum/merge）'
-                        description='Settings 是 task 级；merge 可在 task/job 级触发（会返回 rq_id）。'
+                        showIcon
+                        message='Consensus Info'
+                        description='Consensus 用于 replicas 一致性与合并（quorum/merge）。Settings 是 task 级；merge 可在 task/job 级触发（会返回 rq_id）。'
                     />
 
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <Button
-                            icon={<ReloadOutlined />}
-                            onClick={loadConsensusSettings}
-                            disabled={consensusLoading || kind !== 'task'}
-                        >
-                            刷新 settings（task）
-                        </Button>
-                        <Button
-                            type='primary'
-                            loading={merging}
-                            onClick={mergeConsensus}
-                            disabled={kind === 'project'}
-                        >
-                            发起 merge
-                        </Button>
-                        {kind !== 'task' ? (
-                            <Text type='secondary'>settings 仅 task 级可读</Text>
-                        ) : null}
-                    </div>
+                    <Card size='small' title='Operations'>
+                        <Space>
+                            <Button
+                                icon={<ReloadOutlined />}
+                                onClick={loadConsensusSettings}
+                                disabled={consensusLoading || kind !== 'task'}
+                            >
+                                刷新 Settings (Task Only)
+                            </Button>
+                            <Button
+                                type='primary'
+                                loading={merging}
+                                onClick={mergeConsensus}
+                                disabled={kind === 'project'}
+                            >
+                                发起 Merge
+                            </Button>
+                        </Space>
+                        {kind !== 'task' && (
+                            <div style={{ marginTop: 8 }}>
+                                <Text type='secondary'>* Settings 仅 Task 级可读</Text>
+                            </div>
+                        )}
+                    </Card>
 
-                    {consensusError ? <Alert type='error' message={consensusError} /> : null}
-                    {consensusLoading ? <Spin /> : null}
-                    {consensusSettings ? (
-                        <pre style={{
-                            maxHeight: 520,
-                            overflow: 'auto',
-                            background: '#111827',
-                            color: '#e5e7eb',
-                            padding: 12,
-                            borderRadius: 6,
-                            fontSize: 12,
-                        }}
-                        >
-                            {JSON.stringify(consensusSettings, null, 2)}
-                        </pre>
-                    ) : null}
-                </div>
+                    {consensusError && <Alert type='error' message={consensusError} showIcon />}
+
+                    <Card
+                        size='small'
+                        title='Consensus Settings'
+                        extra={consensusLoading && <Spin size='small' />}
+                    >
+                        {consensusSettings ? (
+                            <pre style={jsonStyle}>
+                                {JSON.stringify(consensusSettings, null, 2)}
+                            </pre>
+                        ) : (
+                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='No Settings Loaded' />
+                        )}
+                    </Card>
+                </Space>
             ),
         },
         {
             key: 'honeypots',
-            label: 'Honeypots',
+            label: (
+                <Space>
+                    <ExperimentOutlined />
+                    Honeypots
+                </Space>
+            ),
             children: (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <Button
-                            icon={<ReloadOutlined />}
-                            onClick={loadValidationLayout}
-                            disabled={validationLoading}
-                        >
-                            刷新 validation_layout
-                        </Button>
-                        <Text type='secondary'>
-                            来自 `/api/tasks|jobs/{'{id}'}/validation_layout`
-                        </Text>
-                    </div>
-                    {validationError ? <Alert type='error' message={validationError} /> : null}
-                    {validationLoading ? <Spin /> : null}
-                    {validationLayout ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            {validationLayout && typeof validationLayout === 'object' &&
-                            ('honeypotFrames' in validationLayout) && ('honeypotRealFrames' in validationLayout) ? (
-                                <Alert
-                                    type='info'
-                                    message='honeypot_frames 映射'
-                                    description={`count=${(validationLayout.honeypotFrames || []).length}`}
-                                />
-                            ) : null}
-                            {validationLayout && typeof validationLayout === 'object' &&
-                            ('honeypotFrames' in validationLayout) && ('honeypotRealFrames' in validationLayout) ? (
-                                <pre style={{
-                                    maxHeight: 220,
-                                    overflow: 'auto',
-                                    background: '#111827',
-                                    color: '#e5e7eb',
-                                    padding: 12,
-                                    borderRadius: 6,
-                                    fontSize: 12,
-                                }}
+                <Space direction='vertical' size='middle' style={{ width: '100%' }}>
+                    <Card size='small' title='Validation Layout'>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                            <Space>
+                                <Button
+                                    icon={<ReloadOutlined />}
+                                    onClick={loadValidationLayout}
+                                    disabled={validationLoading}
                                 >
-                                    {JSON.stringify(
-                                        (validationLayout.honeypotFrames as number[]).map((frame: number, idx: number) => ({
-                                            honeypot_frame: frame,
-                                            real_frame: (validationLayout.honeypotRealFrames as number[])[idx],
-                                        })),
-                                        null,
-                                        2,
-                                    )}
-                                </pre>
-                            ) : null}
-                        <pre style={{
-                            maxHeight: 520,
-                            overflow: 'auto',
-                            background: '#111827',
-                            color: '#e5e7eb',
-                            padding: 12,
-                            borderRadius: 6,
-                            fontSize: 12,
-                        }}
-                        >
-                            {JSON.stringify(validationLayout, null, 2)}
-                        </pre>
+                                    刷新 Layout
+                                </Button>
+                                <Text type='secondary'>
+                                    Source: `/api/tasks|jobs/{'{id}'}/validation_layout`
+                                </Text>
+                            </Space>
                         </div>
-                    ) : (
-                        <Text type='secondary'>该资源没有 validation_layout（或未启用验证/无数据）</Text>
-                    )}
-                </div>
+
+                        {validationError && <Alert type='error' message={validationError} showIcon style={{ marginBottom: 12 }} />}
+                        {validationLoading && <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>}
+
+                        {!validationLoading && validationLayout ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                {validationLayout && typeof validationLayout === 'object' &&
+                                ('honeypotFrames' in validationLayout) && ('honeypotRealFrames' in validationLayout) && (
+                                    <Alert
+                                        type='success'
+                                        message={`Honeypot Frames Count: ${(validationLayout.honeypotFrames || []).length}`}
+                                        showIcon
+                                    />
+                                )}
+
+                                <Card size='small' type='inner' title='Honeypot Frames Mapping'>
+                                    {validationLayout && typeof validationLayout === 'object' &&
+                                    ('honeypotFrames' in validationLayout) && ('honeypotRealFrames' in validationLayout) ? (
+                                        <pre style={{ ...jsonStyle, maxHeight: 200 }}>
+                                            {JSON.stringify(
+                                                (validationLayout.honeypotFrames as number[]).map((frame: number, idx: number) => ({
+                                                    honeypot_frame: frame,
+                                                    real_frame: (validationLayout.honeypotRealFrames as number[])[idx],
+                                                })),
+                                                null,
+                                                2,
+                                            )}
+                                        </pre>
+                                    ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+                                </Card>
+
+                                <Card size='small' type='inner' title='Full Layout Data'>
+                                    <pre style={jsonStyle}>
+                                        {JSON.stringify(validationLayout, null, 2)}
+                                    </pre>
+                                </Card>
+                            </div>
+                        ) : (
+                            !validationLoading && <Empty description='该资源没有 validation_layout（或未启用验证/无数据）' />
+                        )}
+                    </Card>
+                </Space>
             ),
         },
     ];
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ padding: '0 12px 24px' }}>
             {header}
-            <Tabs items={items} />
+            <Tabs items={items} type="card" />
         </div>
     );
 }
 
 export default React.memo(AnalyticsLiteContent);
-
-

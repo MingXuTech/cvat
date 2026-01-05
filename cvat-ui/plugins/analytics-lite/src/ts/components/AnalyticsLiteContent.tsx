@@ -8,7 +8,8 @@ import { getCore, Project, Task, Job } from 'cvat-core-wrapper';
 
 import { AnalyticsLiteProps, getResourceKind } from './analytics/types';
 import ProjectAnalytics from './analytics/pages/ProjectAnalytics';
-import TaskJobAnalytics from './analytics/pages/TaskJobAnalytics';
+import TaskAnalytics from './analytics/pages/TaskAnalytics';
+import JobAnalytics from './analytics/pages/JobAnalytics';
 
 function AnalyticsLiteContent(props: AnalyticsLiteProps): JSX.Element {
     const { resource, timePeriod } = props;
@@ -28,20 +29,17 @@ function AnalyticsLiteContent(props: AnalyticsLiteProps): JSX.Element {
         return <ProjectAnalytics resource={resource} timePeriod={timePeriod} />;
     }
 
-    // Task / Job use the tabbed experience
-    if (resource instanceof Task || resource instanceof Job) {
-        return (
-            <TaskJobAnalytics
-                resource={resource}
-                timePeriod={timePeriod}
-                kind={kind}
-                debugEnabled={debugEnabled}
-            />
-        );
+    if (resource instanceof Task) {
+        return <TaskAnalytics resource={resource} timePeriod={timePeriod} debugEnabled={debugEnabled} />;
+    }
+
+    if (resource instanceof Job) {
+        return <JobAnalytics resource={resource} timePeriod={timePeriod} debugEnabled={debugEnabled} />;
     }
 
     // Fallback (should not happen)
-    return <TaskJobAnalytics resource={resource} timePeriod={timePeriod} kind={kind} debugEnabled={debugEnabled} />;
+    if (kind === 'task') return <TaskAnalytics resource={resource as any} timePeriod={timePeriod} debugEnabled={debugEnabled} />;
+    return <JobAnalytics resource={resource as any} timePeriod={timePeriod} debugEnabled={debugEnabled} />;
 }
 
 export default React.memo(AnalyticsLiteContent);

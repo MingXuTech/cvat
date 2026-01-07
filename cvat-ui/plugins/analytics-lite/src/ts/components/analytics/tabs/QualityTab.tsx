@@ -14,11 +14,23 @@ import Text from 'antd/lib/typography/Text';
 import notification from 'antd/lib/notification';
 import { ReloadOutlined } from '@ant-design/icons';
 import { Request, getCore, Job } from 'cvat-core-wrapper';
+import { Line } from 'react-chartjs-2';
+import {
+    Chart as ChartJS,
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Tooltip,
+    Legend,
+} from 'chart.js';
 
 import { AnalyticsLiteProps, ResourceKind } from '../types';
 import { fetchQualityReportData, isCvatError } from '../../../api';
 import { fmtNum, fmtRatio } from '../utils';
 import { jsonStyle } from '../styles';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
 function getJobId(r: any): number | null {
     return r?.jobID ?? r?.jobId ?? r?.job_id ?? r?.operation?.job_id ?? null;
@@ -30,6 +42,28 @@ function getCreatedDateStr(r: any): string | null {
 
 function getCreatedMs(r: any): number {
     const s = getCreatedDateStr(r);
+    if (!s) return 0;
+    const ms = Date.parse(s);
+    return Number.isNaN(ms) ? 0 : ms;
+}
+
+function getTargetLastUpdatedStr(r: any): string | null {
+    return r?.targetLastUpdated ?? r?.target_last_updated ?? null;
+}
+
+function getTargetLastUpdatedMs(r: any): number {
+    const s = getTargetLastUpdatedStr(r);
+    if (!s) return 0;
+    const ms = Date.parse(s);
+    return Number.isNaN(ms) ? 0 : ms;
+}
+
+function getJobUpdatedStr(job: any): string | null {
+    return job?.updatedDate ?? job?.updated_date ?? null;
+}
+
+function getJobUpdatedMs(job: any): number {
+    const s = getJobUpdatedStr(job);
     if (!s) return 0;
     const ms = Date.parse(s);
     return Number.isNaN(ms) ? 0 : ms;
@@ -62,6 +96,52 @@ export default function QualityTab(
         reports.find((r: any) => r?.id === selectedReportId) || null
     ), [reports, selectedReportId]);
     const summary = useMemo(() => (selectedReport?.summary || null), [selectedReport]);
+
+    const jobHistory = useMemo(() => {
+        if (kind !== 'job') return [];
+        const jid = resource?.id;
+        const jobReports = reports
+            .filter((r: any) => r?.target === 'job' && getJobId(r) === jid)
+            .slice()
+            .sort((a: any, b: any) => {
+                const diff = getCreatedMs(a) - getCreatedMs(b);
+                if (diff) return diff;
+                return (a.id || 0) - (b.id || 0);
+            });
+
+        return jobReports.map((r: any) => {
+            const created = getCreatedDateStr(r);
+            const label = (() => {
+                if (!created) return `#${r?.id ?? '-'}`;
+                try { return new Date(created).toLocaleString(); } catch { return created; }
+            })();
+
+            const s = r?.summary || {};
+            return {
+                reportId: r?.id,
+                createdMs: getCreatedMs(r),
+                label,
+                accuracy: typeof s?.accuracy === 'number' ? s.accuracy : null,
+                precision: typeof s?.precision === 'number' ? s.precision : null,
+                recall: typeof s?.recall === 'number' ? s.recall : null,
+                targetLastUpdatedMs: getTargetLastUpdatedMs(r),
+            };
+        });
+    }, [kind, reports, resource]);
+
+    const latestJobReportForCurrentJob = useMemo(() => {
+        if (kind !== 'job') return null;
+        const jid = resource?.id;
+        const list = reports
+            .filter((r: any) => r?.target === 'job' && getJobId(r) === jid)
+            .slice()
+            .sort((a: any, b: any) => {
+                const diff = getCreatedMs(b) - getCreatedMs(a);
+                if (diff) return diff;
+                return (b.id || 0) - (a.id || 0);
+            });
+        return list[0] || null;
+    }, [kind, reports, resource]);
 
     const displayedJobReports = useMemo(() => {
         const jobReports = reports.filter((r: any) => r?.target === 'job');
@@ -198,6 +278,20 @@ export default function QualityTab(
 
     const createQualityReport = async (): Promise<void> => {
         try {
+            if (kind === 'job') {
+                const jobUpdatedMs = getJobUpdatedMs(resource);
+                const reportTargetUpdatedMs = latestJobReportForCurrentJob ?
+                    (getTargetLastUpdatedMs(latestJobReportForCurrentJob) || getCreatedMs(latestJobReportForCurrentJob)) :
+                    0;
+                if (jobUpdatedMs && reportTargetUpdatedMs && jobUpdatedMs <= reportTargetUpdatedMs) {
+                    notification.warning({
+                        message: 'Job 没有更新，跳过重新计算',
+                        description: '未检测到新的标注变更（job.updated_date 没有超过最近一次 report 的 target_last_updated）。',
+                    });
+                    return;
+                }
+            }
+
             setCreatingReport(true);
             setQualityError(null);
             setCreateRqId(null);
@@ -276,6 +370,14 @@ export default function QualityTab(
             <Card size='small'>
                 <Space wrap>
                     <Button icon={<ReloadOutlined />} onClick={loadReports} disabled={qualityLoading}>刷新列表</Button>
+                    <Button
+                        type='primary'
+                        loading={creatingReport}
+                        disabled={qualityLoading}
+                        onClick={createQualityReport}
+                    >
+                        {kind === 'job' ? '重新计算 (当前 Task)' : '生成 / 重新计算'}
+                    </Button>
                     <Text>Report:</Text>
                     <Select<number>
                         style={{ minWidth: 250 }}
@@ -398,6 +500,73 @@ export default function QualityTab(
 
             {selectedReportId ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {kind === 'job' && (
+                        <Card
+                            size='small'
+                            title={`指标趋势（Accuracy / Precision / Recall，共 ${jobHistory.length} 次）`}
+                            extra={latestJobReportForCurrentJob ? (
+                                <Text type='secondary' style={{ fontSize: 12 }}>
+                                    job.updated: {getJobUpdatedStr(resource) || '-'} / last report target_last_updated: {getTargetLastUpdatedStr(latestJobReportForCurrentJob) || getCreatedDateStr(latestJobReportForCurrentJob) || '-'}
+                                </Text>
+                            ) : null}
+                        >
+                            {jobHistory.length >= 2 ? (
+                                <Line
+                                    data={{
+                                        labels: jobHistory.map((p: any) => p.label),
+                                        datasets: [
+                                            {
+                                                label: 'Accuracy (%)',
+                                                data: jobHistory.map((p: any) => (typeof p.accuracy === 'number' ? p.accuracy * 100 : null)),
+                                                borderColor: '#1677ff',
+                                                backgroundColor: 'rgba(22, 119, 255, 0.15)',
+                                                tension: 0.25,
+                                                spanGaps: true,
+                                            },
+                                            {
+                                                label: 'Precision (%)',
+                                                data: jobHistory.map((p: any) => (typeof p.precision === 'number' ? p.precision * 100 : null)),
+                                                borderColor: '#52c41a',
+                                                backgroundColor: 'rgba(82, 196, 26, 0.15)',
+                                                tension: 0.25,
+                                                spanGaps: true,
+                                            },
+                                            {
+                                                label: 'Recall (%)',
+                                                data: jobHistory.map((p: any) => (typeof p.recall === 'number' ? p.recall * 100 : null)),
+                                                borderColor: '#faad14',
+                                                backgroundColor: 'rgba(250, 173, 20, 0.15)',
+                                                tension: 0.25,
+                                                spanGaps: true,
+                                            },
+                                        ],
+                                    }}
+                                    options={{
+                                        responsive: true,
+                                        maintainAspectRatio: false,
+                                        plugins: {
+                                            legend: { position: 'top' as const },
+                                            tooltip: { mode: 'index' as const, intersect: false },
+                                        },
+                                        interaction: { mode: 'index' as const, intersect: false },
+                                        scales: {
+                                            y: {
+                                                min: 0,
+                                                max: 100,
+                                                ticks: { callback: (v: any) => `${v}%` },
+                                            },
+                                        },
+                                    }}
+                                    height={220}
+                                />
+                            ) : (
+                                <Empty
+                                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                    description={jobHistory.length === 1 ? '只有 1 次计算结果，趋势图需要至少 2 次' : '暂无趋势数据'}
+                                />
+                            )}
+                        </Card>
+                    )}
                     <Card size='small' title='Summary'>
                         {summary ? (
                             <Space direction='vertical' style={{ width: '100%' }} size='small'>

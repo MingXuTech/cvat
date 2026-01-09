@@ -30,6 +30,11 @@ export default function ConsensusTab(
     const [consensusJobsLoading, setConsensusJobsLoading] = useState(false);
     const [consensusJobsError, setConsensusJobsError] = useState<string | null>(null);
     const [consensusJobs, setConsensusJobs] = useState<any[] | null>(null);
+    const [taskQualityReport, setTaskQualityReport] = useState<any | null>(null);
+    const [jobQualityReport, setJobQualityReport] = useState<any | null>(null);
+    const [qualityReportLoading, setQualityReportLoading] = useState(false);
+    const [jobReportsLoading, setJobReportsLoading] = useState(false);
+    const [creatingReport, setCreatingReport] = useState(false);
 
     const loadConsensusSettings = async (): Promise<void> => {
         setConsensusLoading(true);
@@ -50,6 +55,98 @@ export default function ConsensusTab(
             }
         } finally {
             setConsensusLoading(false);
+        }
+    };
+
+    const getTaskIdForReports = (): number | null => {
+        if (kind === 'task') return resource.id;
+        if (kind === 'job') return (resource as any).taskId ?? null;
+        return null;
+    };
+
+    const loadTaskQualityReport = async (): Promise<void> => {
+        const taskID = getTaskIdForReports();
+        if (!taskID) {
+            setTaskQualityReport(null);
+            return;
+        }
+
+        setQualityReportLoading(true);
+        try {
+            const reports = await core.analytics.quality.reports({
+                taskID,
+                target: 'task',
+                sort: '-created_date',
+                pageSize: 1,
+            });
+
+            setTaskQualityReport(reports.length > 0 ? reports[0] : null);
+        } catch (err) {
+            console.error('Failed to load task quality report:', err);
+        } finally {
+            setQualityReportLoading(false);
+        }
+    };
+
+    const loadJobQualityReport = async (): Promise<void> => {
+        if (kind !== 'job') {
+            setJobQualityReport(null);
+            return;
+        }
+
+        setJobReportsLoading(true);
+        try {
+            const reports = await core.analytics.quality.reports({
+                jobID: resource.id,
+                target: 'job',
+                sort: '-created_date',
+                pageSize: 1,
+            });
+            setJobQualityReport(reports.length > 0 ? reports[0] : null);
+        } catch (err) {
+            console.error('Failed to load job quality report:', err);
+        } finally {
+            setJobReportsLoading(false);
+        }
+    };
+
+    const createQualityReport = async (): Promise<void> => {
+        setCreatingReport(true);
+        try {
+            const backendAPI: string = core?.config?.backendAPI;
+            const url = `${backendAPI}/quality/reports`;
+            const body: any = {};
+            if (kind === 'project') body.project_id = resource.id;
+            if (kind === 'task') body.task_id = resource.id;
+            if (kind === 'job') body.task_id = (resource as any).taskId;
+
+            const response = await core.server.request(url, { method: 'POST', data: body });
+            const rqId: string | null = response?.rq_id || response?.id || null;
+
+            if (rqId) {
+                notification.info({
+                    message: 'Quality Report request submitted',
+                    description: `Request ID: ${rqId}. Please wait for processing.`,
+                });
+
+                // Poll for completion (simple version for now, or just reload after delay)
+                // Ideally we would listen to the request status, but for simplicity here we just wait a bit and reload
+                setTimeout(() => {
+                    loadTaskQualityReport();
+                    loadJobQualityReport();
+                }, 3000);
+            } else {
+                notification.success({ message: 'Quality Report created' });
+                loadTaskQualityReport();
+                loadJobQualityReport();
+            }
+        } catch (err: unknown) {
+            notification.error({
+                message: 'Failed to create Quality Report',
+                description: err instanceof Error ? err.message : '',
+            });
+        } finally {
+            setCreatingReport(false);
         }
     };
 
@@ -88,7 +185,10 @@ export default function ConsensusTab(
             const rqID: string = await (resource as any).mergeConsensusJobs();
             notification.success({ message: '已发起 consensus merge', description: `rq_id: ${rqID}` });
         } catch (err: unknown) {
-            notification.error({ message: '无法发起 consensus merge', description: err instanceof Error ? err.message : '' });
+            notification.error({
+                message: '无法发起 consensus merge',
+                description: err instanceof Error ? err.message : '',
+            });
         } finally {
             setMerging(false);
         }
@@ -97,6 +197,8 @@ export default function ConsensusTab(
     useEffect(() => {
         loadConsensusSettings();
         loadConsensusJobs();
+        loadTaskQualityReport();
+        loadJobQualityReport();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [resource.id, kind]);
 
@@ -144,32 +246,135 @@ export default function ConsensusTab(
             <Card
                 size='small'
                 title='Consensus 指标（Task Only）'
-                extra={(consensusLoading || consensusJobsLoading) && <Spin size='small' />}
+                extra={
+                    (consensusLoading || consensusJobsLoading || qualityReportLoading || jobReportsLoading) && (
+                        <Spin size='small' />
+                    )
+                }
             >
                 {kind !== 'task' ? (
                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='仅 Task 级展示指标' />
                 ) : (
                     <>
                         {(consensusError || consensusJobsError) && (
-                            <Alert type='error' showIcon style={{ marginBottom: 12 }} message={consensusError || consensusJobsError} />
+                            <Alert
+                                type='error'
+                                showIcon
+                                style={{ marginBottom: 12 }}
+                                message={consensusError || consensusJobsError}
+                            />
                         )}
                         <Descriptions size='small' bordered column={2}>
-                            <Descriptions.Item label='Enabled'>{consensusMetrics?.enabled ? 'Yes' : 'No'}</Descriptions.Item>
+                            <Descriptions.Item label='Enabled'>
+                                {consensusMetrics?.enabled ? 'Yes' : 'No'}
+                            </Descriptions.Item>
                             <Descriptions.Item label='Quorum'>{consensusMetrics?.quorum ?? '-'}</Descriptions.Item>
                             <Descriptions.Item label='IoU Threshold'>
-                                {typeof consensusMetrics?.iou === 'number' ? consensusMetrics.iou : (consensusMetrics?.iou ?? '-')}
+                                {typeof consensusMetrics?.iou === 'number'
+                                    ? consensusMetrics.iou
+                                    : (consensusMetrics?.iou ?? '-')}
                             </Descriptions.Item>
                             <Descriptions.Item label='Jobs Total'>{consensusMetrics?.jobsTotal ?? 0}</Descriptions.Item>
-                            <Descriptions.Item label='Max Replicas'>{consensusMetrics?.maxReplicas ?? 0}</Descriptions.Item>
+                            <Descriptions.Item label='Max Replicas'>
+                                {consensusMetrics?.maxReplicas ?? 0}
+                            </Descriptions.Item>
                             <Descriptions.Item label='Replicas Histogram'>
                                 <pre style={{ ...jsonStyle, maxHeight: 120 }}>
                                     {JSON.stringify(consensusMetrics?.histogram || {}, null, 2)}
                                 </pre>
                             </Descriptions.Item>
                         </Descriptions>
+                        <Descriptions
+                            size='small'
+                            bordered
+                            column={3}
+                            style={{ marginTop: 16 }}
+                            title='Task Quality Metrics'
+                        >
+                            <Descriptions.Item label='Accuracy'>
+                                {taskQualityReport ? (taskQualityReport.summary.accuracy * 100).toFixed(2) + '%' : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='Precision'>
+                                {taskQualityReport ? (taskQualityReport.summary.precision * 100).toFixed(2) + '%' : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='Recall'>
+                                {taskQualityReport ? (taskQualityReport.summary.recall * 100).toFixed(2) + '%' : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='Valid Count'>
+                                {taskQualityReport ? taskQualityReport.summary.validCount : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='DS Count'>
+                                {taskQualityReport ? taskQualityReport.summary.dsCount : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='GT Count'>
+                                {taskQualityReport ? taskQualityReport.summary.gtCount : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='Conflict Count'>
+                                {taskQualityReport ? taskQualityReport.summary.conflictCount : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label='Total Frames'>
+                                {taskQualityReport ? taskQualityReport.summary.totalFrames : '-'}
+                            </Descriptions.Item>
+                        </Descriptions>
                     </>
                 )}
             </Card>
+
+            {kind === 'job' && (
+                <Card
+                    size='small'
+                    title='Quality Metrics（Job & Task）'
+                    extra={(qualityReportLoading || jobReportsLoading) && <Spin size='small' />}
+                >
+                    <Descriptions size='small' bordered column={3} title='Job Quality Metrics'>
+                        <Descriptions.Item label='Accuracy'>
+                            {jobQualityReport ? (jobQualityReport.summary.accuracy * 100).toFixed(2) + '%' : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Precision'>
+                            {jobQualityReport ? (jobQualityReport.summary.precision * 100).toFixed(2) + '%' : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Recall'>
+                            {jobQualityReport ? (jobQualityReport.summary.recall * 100).toFixed(2) + '%' : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Valid Count'>
+                            {jobQualityReport ? jobQualityReport.summary.validCount : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Conflict Count'>
+                            {jobQualityReport ? jobQualityReport.summary.conflictCount : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Total Frames'>
+                            {jobQualityReport ? jobQualityReport.summary.totalFrames : '-'}
+                        </Descriptions.Item>
+                    </Descriptions>
+
+                    <Descriptions
+                        size='small'
+                        bordered
+                        column={3}
+                        style={{ marginTop: 16 }}
+                        title='Task Quality Metrics'
+                    >
+                        <Descriptions.Item label='Accuracy'>
+                            {taskQualityReport ? (taskQualityReport.summary.accuracy * 100).toFixed(2) + '%' : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Precision'>
+                            {taskQualityReport ? (taskQualityReport.summary.precision * 100).toFixed(2) + '%' : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Recall'>
+                            {taskQualityReport ? (taskQualityReport.summary.recall * 100).toFixed(2) + '%' : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Valid Count'>
+                            {taskQualityReport ? taskQualityReport.summary.validCount : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Conflict Count'>
+                            {taskQualityReport ? taskQualityReport.summary.conflictCount : '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label='Total Frames'>
+                            {taskQualityReport ? taskQualityReport.summary.totalFrames : '-'}
+                        </Descriptions.Item>
+                    </Descriptions>
+                </Card>
+            )}
 
             <Card size='small' title='Jobs（replicas 分布）' extra={consensusJobsLoading && <Spin size='small' />}>
                 <Table
@@ -186,15 +391,23 @@ export default function ConsensusTab(
                         { title: 'Stage', dataIndex: 'stage', key: 'stage' },
                         { title: 'State', dataIndex: 'state', key: 'state' },
                         { title: 'Replicas', dataIndex: 'replicas', key: 'replicas' },
-                        { title: 'Parent', dataIndex: 'parent_job_id', key: 'parent_job_id', render: (v: any) => v ?? '-' },
+                        {
+                            title: 'Parent',
+                            dataIndex: 'parent_job_id',
+                            key: 'parent_job_id',
+                            render: (v: any) => v ?? '-',
+                        },
                         {
                             title: '打开',
                             key: 'open',
-                            render: (_: any, r: any) => (r.link && r.link !== '#') ? (
-                                <Button type='link' href={r.link} target='_blank'>打开 Job</Button>
-                            ) : (
-                                <Text type='secondary'>-</Text>
-                            ),
+                            render: (_: any, r: any) =>
+                                r.link && r.link !== '#' ? (
+                                    <Button type='link' href={r.link} target='_blank'>
+                                        打开 Job
+                                    </Button>
+                                ) : (
+                                    <Text type='secondary'>-</Text>
+                                ),
                         },
                     ]}
                     locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 Jobs' /> }}
@@ -212,10 +425,19 @@ export default function ConsensusTab(
                     </Button>
                     <Button
                         icon={<ReloadOutlined />}
-                        onClick={loadConsensusJobs}
-                        disabled={consensusJobsLoading || kind !== 'task'}
+                        onClick={() => {
+                            loadConsensusJobs();
+                            loadTaskQualityReport();
+                            loadJobQualityReport();
+                        }}
+                        disabled={
+                            consensusJobsLoading || qualityReportLoading || jobReportsLoading || kind === 'project'
+                        }
                     >
-                        刷新 Jobs
+                        刷新 Jobs & Reports
+                    </Button>
+                    <Button onClick={createQualityReport} loading={creatingReport} disabled={kind === 'project'}>
+                        计算 Metrics
                     </Button>
                     <Button type='primary' loading={merging} onClick={mergeConsensus} disabled={kind === 'project'}>
                         发起 Merge
@@ -238,5 +460,3 @@ export default function ConsensusTab(
         </Space>
     );
 }
-
-

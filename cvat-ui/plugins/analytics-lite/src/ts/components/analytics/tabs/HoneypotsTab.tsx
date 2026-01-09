@@ -75,6 +75,9 @@ export default function HoneypotsTab(
                     const layout = await (job as any).validationLayout?.();
                     const honeypotFrames: number[] = layout?.honeypotFrames || [];
                     const honeypotRealFrames: number[] = layout?.honeypotRealFrames || [];
+                    const gtImagesCount = new Set(
+                        (honeypotRealFrames || []).filter((v: any) => typeof v === 'number' && Number.isFinite(v)),
+                    ).size;
                     const mappings = honeypotFrames.map((dsFrame: number, idx: number) => ({
                         ds_frame: dsFrame,
                         gt_frame: honeypotRealFrames[idx] ?? null,
@@ -89,6 +92,7 @@ export default function HoneypotsTab(
                         gt_job_id: gtJobId,
                         task_id: task.id,
                         honeypot_count: honeypotFrames.length,
+                        gt_images_count: gtImagesCount,
                         mappings,
                     });
                 } catch (e: unknown) {
@@ -99,6 +103,7 @@ export default function HoneypotsTab(
                         gt_job_id: gtJobId,
                         task_id: task.id,
                         honeypot_count: 0,
+                        gt_images_count: 0,
                         mappings: [],
                         error: e instanceof Error ? e.message : String(e),
                     });
@@ -171,6 +176,7 @@ export default function HoneypotsTab(
                                         columns={[
                                             { title: 'Job ID (DS)', dataIndex: 'job_id', key: 'job_id' },
                                             { title: 'Honeypots', dataIndex: 'honeypot_count', key: 'honeypot_count' },
+                                            { title: 'GT 图片数', dataIndex: 'gt_images_count', key: 'gt_images_count' },
                                             { title: 'GT Job', dataIndex: 'gt_job_id', key: 'gt_job_id', render: (v: any) => v ?? '-' },
                                             {
                                                 title: '打开 Job',
@@ -251,6 +257,7 @@ export default function HoneypotsTab(
                                             { title: 'Job ID (DS)', dataIndex: 'job_id', key: 'job_id' },
                                             { title: 'Job Type', dataIndex: 'job_type', key: 'job_type' },
                                             { title: 'Honeypots', dataIndex: 'honeypot_count', key: 'honeypot_count' },
+                                            { title: 'GT 图片数', dataIndex: 'gt_images_count', key: 'gt_images_count' },
                                             { title: 'GT Job', key: 'gt_job', render: (_: any, r: any) => r.gt_job_id ?? '-' },
                                             {
                                                 title: '打开 Job',

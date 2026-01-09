@@ -94,8 +94,14 @@ export default function ActivityTab(
 
             const tsKey = headers.includes('timestamp') ? 'timestamp' :
                 (headers.find((h) => h.toLowerCase().includes('timestamp')) || 'timestamp');
-            const userKey = headers.includes('user_id') ? 'user_id' :
-                (headers.find((h) => h.toLowerCase() === 'user') || headers.find((h) => h.toLowerCase().includes('user')) || 'user_id');
+            const userIdKey = headers.includes('user_id') ? 'user_id' :
+                (headers.find((h) => h.toLowerCase() === 'user_id') || headers.find((h) => h.toLowerCase().includes('user_id')) || 'user_id');
+            const userNameKey = headers.includes('user_name') ? 'user_name' :
+                (headers.find((h) => h.toLowerCase() === 'user_name') ||
+                    headers.find((h) => h.toLowerCase() === 'username') ||
+                    headers.find((h) => h.toLowerCase().includes('user_name')) ||
+                    headers.find((h) => h.toLowerCase().includes('username')) ||
+                    '');
             const jobKey = headers.includes('job_id') ? 'job_id' :
                 (headers.find((h) => h.toLowerCase().includes('job')) || 'job_id');
             const scopeKey = headers.includes('scope') ? 'scope' :
@@ -105,7 +111,14 @@ export default function ActivityTab(
 
             const byScope = new Map<string, number>();
             const bySource = new Map<string, number>();
-            const byUser = new Map<string, { userId: string; events: number; timestamps: number[]; scopes: Map<string, number> }>();
+            const byUser = new Map<string, {
+                key: string;
+                userId: string;
+                username: string;
+                events: number;
+                timestamps: number[];
+                scopes: Map<string, number>;
+            }>();
             const byJob = new Map<string, { jobId: string; events: number }>();
 
             let minTs = Number.POSITIVE_INFINITY;
@@ -120,14 +133,25 @@ export default function ActivityTab(
 
                 const scope = String(r[scopeKey] ?? '').trim() || '(no scope)';
                 const source = String(r[sourceKey] ?? '').trim() || '(unknown)';
-                const userId = String(r[userKey] ?? '').trim() || '(unknown)';
+                const userId = String(r[userIdKey] ?? '').trim() || '';
+                const username = userNameKey ? (String(r[userNameKey] ?? '').trim() || '') : '';
+                const userKey = userId || username || '(unknown)';
                 const jobId = String(r[jobKey] ?? '').trim() || '-';
 
                 byScope.set(scope, (byScope.get(scope) || 0) + 1);
                 bySource.set(source, (bySource.get(source) || 0) + 1);
 
-                if (!byUser.has(userId)) byUser.set(userId, { userId, events: 0, timestamps: [], scopes: new Map() });
-                const u = byUser.get(userId)!;
+                if (!byUser.has(userKey)) {
+                    byUser.set(userKey, {
+                        key: userKey,
+                        userId: userId || '-',
+                        username: username || '-',
+                        events: 0,
+                        timestamps: [],
+                        scopes: new Map(),
+                    });
+                }
+                const u = byUser.get(userKey)!;
                 u.events += 1;
                 if (ts) u.timestamps.push(ts);
                 u.scopes.set(scope, (u.scopes.get(scope) || 0) + 1);
@@ -164,7 +188,7 @@ export default function ActivityTab(
 
             setActivityStats({
                 headers,
-                inferredKeys: { tsKey, userKey, jobKey, scopeKey, sourceKey },
+                inferredKeys: { tsKey, userIdKey, userNameKey, jobKey, scopeKey, sourceKey },
                 totalEvents: rows.length,
                 uniqueUsers: byUser.size,
                 uniqueJobs: byJob.size,
@@ -263,10 +287,11 @@ export default function ActivityTab(
                     <Table
                         size='small'
                         pagination={{ pageSize: 10, showSizeChanger: true }}
-                        rowKey={(r: any) => r.userId}
+                        rowKey={(r: any) => r.key || r.userId}
                         dataSource={activityStats.tables.users}
                         columns={[
                             { title: 'User ID', dataIndex: 'userId', key: 'userId' },
+                            { title: 'Username', dataIndex: 'username', key: 'username' },
                             { title: 'Events', dataIndex: 'events', key: 'events' },
                             {
                                 title: `Estimated Active (idle<=${idleThresholdMinutes}m)`,

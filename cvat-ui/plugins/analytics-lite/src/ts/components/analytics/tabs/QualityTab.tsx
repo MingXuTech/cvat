@@ -3,9 +3,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Card from 'antd/lib/card';
-import Descriptions from 'antd/lib/descriptions';
 import Empty from 'antd/lib/empty';
-import Progress from 'antd/lib/progress';
+import Tag from 'antd/lib/tag';
 import Select from 'antd/lib/select';
 import Space from 'antd/lib/space';
 import Spin from 'antd/lib/spin';
@@ -73,6 +72,21 @@ function getErrorCount(s: any): number | null {
     return s?.errorCount ?? s?.error_count ?? null;
 }
 
+function getTaskId(r: any): number | null {
+    return r?.taskID ?? r?.taskId ?? r?.task_id ?? r?.operation?.task_id ?? null;
+}
+
+function getFrameIdFromAny(r: any): number | null {
+    const v = r?.frame_id ?? r?.frameId ?? r?.frame ?? null;
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v.trim() && Number.isFinite(Number(v))) return Number(v);
+    return null;
+}
+
+function uniqNums(xs: number[]): number[] {
+    return Array.from(new Set(xs.filter((x) => typeof x === 'number' && Number.isFinite(x)))).sort((a, b) => a - b);
+}
+
 export default function QualityTab(
     props: AnalyticsLiteProps & { kind: ResourceKind; debugEnabled: boolean },
 ): JSX.Element {
@@ -87,16 +101,24 @@ export default function QualityTab(
     const [createRqStatus, setCreateRqStatus] = useState<any | null>(null);
     const [reports, setReports] = useState<any[]>([]);
     const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
-    const [reportDataLoading, setReportDataLoading] = useState(false);
-    const [reportData, setReportData] = useState<any | null>(null);
-    const [conflictsLoading, setConflictsLoading] = useState(false);
-    const [conflicts, setConflicts] = useState<any[] | null>(null);
+    // We don't show raw report data/conflicts blocks in UI anymore.
+    // Conflicts are loaded lazily per job report for the "错误帧定位" table below.
     const [jobAssignees, setJobAssignees] = useState<Record<number, string | null>>({});
+
+    // Validation layout + GT mapping caches (for DS frame -> GT frame jump)
+    const [validationByJobLoading, setValidationByJobLoading] = useState<Record<number, boolean>>({});
+    const [validationByJobError, setValidationByJobError] = useState<Record<number, string | null>>({});
+    const [taskLayouts, setTaskLayouts] = useState<Record<number, any>>({});
+    const [jobLayouts, setJobLayouts] = useState<Record<number, any>>({});
+    const [gtJobByTask, setGtJobByTask] = useState<Record<number, number | null>>({});
+    const [taskIdByJob, setTaskIdByJob] = useState<Record<number, number | null>>({});
+    const [conflictsByReportId, setConflictsByReportId] = useState<Record<number, any[] | null>>({});
+    const [conflictsLoadingByReportId, setConflictsLoadingByReportId] = useState<Record<number, boolean>>({});
+    const [conflictsErrorByReportId, setConflictsErrorByReportId] = useState<Record<number, string | null>>({});
 
     const selectedReport = useMemo(() => (
         reports.find((r: any) => r?.id === selectedReportId) || null
     ), [reports, selectedReportId]);
-    const summary = useMemo(() => (selectedReport?.summary || null), [selectedReport]);
 
     const jobHistory = useMemo(() => {
         if (kind !== 'job') return [];
@@ -187,18 +209,124 @@ export default function QualityTab(
             })
     ), [reports]);
 
+    const ensureValidationContext = async (dsJobId: number, preferredTaskId: number | null): Promise<number | null> => {
+        setValidationByJobError((prev) => ({ ...prev, [dsJobId]: null }));
+        setValidationByJobLoading((prev) => ({ ...prev, [dsJobId]: true }));
+
+        try {
+            let taskId: number | null = preferredTaskId;
+
+            if (!taskId) {
+                // Try cache
+                taskId = taskIdByJob[dsJobId] ?? null;
+            }
+
+            if (!taskId) {
+                // Fetch job to get taskId
+                const [job] = await core.jobs.get({ jobID: dsJobId });
+                taskId = job?.taskId ?? job?.taskID ?? job?.task_id ?? null;
+                setTaskIdByJob((prev) => ({ ...prev, [dsJobId]: taskId ?? null }));
+            }
+
+            if (!taskId) {
+                setValidationByJobError((prev) => ({ ...prev, [dsJobId]: `无法解析 taskId（dsJobId=${dsJobId}）` }));
+                return null;
+            }
+
+            // Task validation layout
+            if (!(taskId in taskLayouts)) {
+                // tasks.get expects `id` (not taskID/taskId)
+                const [task] = await core.tasks.get({ id: taskId });
+                const layout = await (task as any)?.validationLayout?.();
+                setTaskLayouts((prev) => ({ ...prev, [taskId as number]: layout ?? null }));
+            }
+
+            // DS job validation layout (needed for gt_pool mapping)
+            if (!(dsJobId in jobLayouts)) {
+                const [job] = await core.jobs.get({ jobID: dsJobId });
+                const layout = await (job as any)?.validationLayout?.();
+                setJobLayouts((prev) => ({ ...prev, [dsJobId]: layout ?? null }));
+            }
+
+            // GT job id for the task
+            if (!(taskId in gtJobByTask)) {
+                const jobs = await core.jobs.get({ taskID: taskId }, true);
+                const gtJob = (jobs || []).find((j: any) => String(j?.type || '').toLowerCase() === 'ground_truth') || null;
+                const gtJobId: number | null = gtJob ? gtJob.id : null;
+                setGtJobByTask((prev) => ({ ...prev, [taskId as number]: gtJobId }));
+            }
+
+            return taskId;
+        } catch (err: unknown) {
+            setValidationByJobError((prev) => ({ ...prev, [dsJobId]: err instanceof Error ? err.message : '无法加载 validation_layout / GT job 信息' }));
+            return null;
+        } finally {
+            setValidationByJobLoading((prev) => ({ ...prev, [dsJobId]: false }));
+        }
+    };
+
+    const loadConflictsForReport = async (reportId: number): Promise<void> => {
+        setConflictsErrorByReportId((prev) => ({ ...prev, [reportId]: null }));
+        setConflictsLoadingByReportId((prev) => ({ ...prev, [reportId]: true }));
+        try {
+            const list = await core.analytics.quality.conflicts({ reportID: reportId });
+            setConflictsByReportId((prev) => ({ ...prev, [reportId]: Array.from(list as any[]) }));
+        } catch (err: unknown) {
+            setConflictsByReportId((prev) => ({ ...prev, [reportId]: null }));
+            setConflictsErrorByReportId((prev) => ({ ...prev, [reportId]: err instanceof Error ? err.message : '无法加载 conflicts' }));
+        } finally {
+            setConflictsLoadingByReportId((prev) => ({ ...prev, [reportId]: false }));
+        }
+    };
+
+    const getConflictFrameRowsFromConflicts = (list: any[] | null): any[] => {
+        if (!Array.isArray(list) || !list.length) return [];
+        const byFrame = new Map<number, { frame: number; types: Set<string>; severities: Set<string>; count: number }>();
+
+        for (const c of list) {
+            const frame = getFrameIdFromAny(c);
+            if (frame === null) continue;
+            const row = byFrame.get(frame) || {
+                frame,
+                types: new Set<string>(),
+                severities: new Set<string>(),
+                count: 0,
+            };
+            if (typeof c?.type === 'string' && c.type) row.types.add(c.type);
+            if (typeof c?.severity === 'string' && c.severity) row.severities.add(c.severity);
+            row.count += 1;
+            byFrame.set(frame, row);
+        }
+
+        const rows = Array.from(byFrame.values()).map((r) => ({
+            frame: r.frame,
+            count: r.count,
+            types: Array.from(r.types).sort(),
+            severities: Array.from(r.severities).sort(),
+        }));
+        rows.sort((a, b) => {
+            const aErr = a.severities.includes('error') ? 1 : 0;
+            const bErr = b.severities.includes('error') ? 1 : 0;
+            if (aErr !== bErr) return bErr - aErr;
+            return a.frame - b.frame;
+        });
+        return rows;
+    };
+
     const loadReports = async (): Promise<void> => {
         setQualityError(null);
         setQualityLoading(true);
         setQualityDebug(null);
         setReports([]);
         setSelectedReportId(null);
-        setReportData(null);
         setCreateRqStatus(null);
         setJobAssignees({});
 
         try {
             const filter: any = {};
+            // analytics.quality.reports filter (cvat-core-wrapper) expects *ID fields
+            // (taskID/projectID/jobID). Using taskId/projectId will throw:
+            // "Unsupported filter property has been received: \"taskId\""
             if (kind === 'project') filter.projectID = resource.id;
             if (kind === 'task') filter.taskID = resource.id;
             if (kind === 'job') {
@@ -253,28 +381,20 @@ export default function QualityTab(
     };
 
     const loadReportData = async (id: number): Promise<void> => {
-        setReportDataLoading(true);
-        setReportData(null);
+        // kept for backward-compat, but we no longer render "Report Data"
         try {
-            const data = await fetchQualityReportData(id);
-            setReportData(data);
+            await fetchQualityReportData(id);
         } catch (err: unknown) {
             notification.error({ message: '无法加载 Quality report data', description: err instanceof Error ? err.message : '' });
-        } finally {
-            setReportDataLoading(false);
         }
     };
 
     const loadConflicts = async (id: number): Promise<void> => {
-        setConflictsLoading(true);
-        setConflicts(null);
+        // kept for backward-compat, but we no longer render raw "Conflicts" block
         try {
-            const list = await core.analytics.quality.conflicts({ reportID: id });
-            setConflicts(Array.from(list as any[]));
+            await core.analytics.quality.conflicts({ reportID: id });
         } catch (err: unknown) {
             notification.error({ message: '无法加载 Quality conflicts', description: err instanceof Error ? err.message : '' });
-        } finally {
-            setConflictsLoading(false);
         }
     };
 
@@ -370,14 +490,6 @@ export default function QualityTab(
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [resource.id, kind]);
 
-    useEffect(() => {
-        if (selectedReportId) {
-            loadReportData(selectedReportId);
-            loadConflicts(selectedReportId);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedReportId]);
-
     return (
         <Space direction='vertical' size='middle' style={{ width: '100%' }}>
             {debugEnabled && (
@@ -429,8 +541,7 @@ export default function QualityTab(
                     />
                     {selectedReportId && (
                         <>
-                            <Button icon={<ReloadOutlined />} loading={reportDataLoading} onClick={() => loadReportData(selectedReportId)}>刷新 Data</Button>
-                            <Button icon={<ReloadOutlined />} loading={conflictsLoading} onClick={() => loadConflicts(selectedReportId)}>刷新 Conflicts</Button>
+                            {/* kept slot for future */}
                         </>
                     )}
                 </Space>
@@ -517,6 +628,217 @@ export default function QualityTab(
                 ) : (
                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 Reports' />
                 )}
+            </Card>
+
+            <Card size='small' title={`错误帧定位（按 Job，DS ↔ GT，可跳转）`}>
+                {displayedJobReports.length ? (
+                    <Table
+                        size='small'
+                        pagination={{ pageSize: 10, showSizeChanger: true }}
+                        rowKey={(r: any) => r.id}
+                        dataSource={displayedJobReports}
+                        expandable={{
+                            expandedRowRender: (r: any) => {
+                                const reportId = r?.id;
+                                const dsJobId = getJobId(r);
+                                const taskIdHint = (() => {
+                                    const fromReport = getTaskId(r);
+                                    if (kind === 'task') return resource.id;
+                                    if (kind === 'job') return (resource as Job).taskId;
+                                    return fromReport;
+                                })();
+
+                                const list = typeof reportId === 'number' ? (conflictsByReportId[reportId] ?? null) : null;
+                                const rows = getConflictFrameRowsFromConflicts(list);
+
+                                const taskIdResolved = (typeof dsJobId === 'number' ? (taskIdByJob[dsJobId] ?? taskIdHint ?? null) : taskIdHint ?? null);
+                                const mode = (typeof taskIdResolved === 'number' ? (taskLayouts[taskIdResolved]?.mode ?? null) : null);
+                                const gtJobId = (typeof taskIdResolved === 'number' ? (gtJobByTask[taskIdResolved] ?? null) : null);
+
+                                const validationFrames = (typeof taskIdResolved === 'number') ?
+                                    (taskLayouts[taskIdResolved]?.validationFrames ?? taskLayouts[taskIdResolved]?.validation_frames ?? []) : [];
+                                const validationSet = new Set(
+                                    (Array.isArray(validationFrames) ? validationFrames : [])
+                                        .map((v: any) => (typeof v === 'string' ? Number(v) : v))
+                                        .filter((v: any) => typeof v === 'number' && Number.isFinite(v)),
+                                );
+
+                                const jl = (typeof dsJobId === 'number') ? (jobLayouts[dsJobId] || null) : null;
+                                const honeypotFrames = jl?.honeypotFrames ?? jl?.honeypot_frames ?? [];
+                                const honeypotRealFrames = jl?.honeypotRealFrames ?? jl?.honeypot_real_frames ?? [];
+                                const hpMap = new Map<number, number>();
+                                if (Array.isArray(honeypotFrames) && Array.isArray(honeypotRealFrames)) {
+                                    for (let i = 0; i < honeypotFrames.length; i++) {
+                                        const k = (typeof honeypotFrames[i] === 'string') ? Number(honeypotFrames[i]) : honeypotFrames[i];
+                                        const v = (typeof honeypotRealFrames[i] === 'string') ? Number(honeypotRealFrames[i]) : honeypotRealFrames[i];
+                                        if (typeof k === 'number' && Number.isFinite(k) && typeof v === 'number' && Number.isFinite(v)) {
+                                            hpMap.set(k, v);
+                                        }
+                                    }
+                                }
+
+                                const mappedRows = rows.map((f: any) => {
+                                    const dsFrame = f.frame;
+                                    const gtFrame = mode === 'gt' ? dsFrame :
+                                        (mode === 'gt_pool' ? (hpMap.get(dsFrame) ?? null) : null);
+                                    const inValidation = gtFrame !== null ? validationSet.has(gtFrame) : validationSet.has(dsFrame);
+                                    const dsLink = (taskIdResolved && dsJobId) ? `/tasks/${taskIdResolved}/jobs/${dsJobId}?frame=${dsFrame}` : null;
+                                    const gtLink = (taskIdResolved && gtJobId && gtFrame !== null) ? `/tasks/${taskIdResolved}/jobs/${gtJobId}?frame=${gtFrame}` : null;
+                                    return {
+                                        ds_frame: dsFrame,
+                                        gt_frame: gtFrame,
+                                        in_validation: inValidation,
+                                        types: f.types || [],
+                                        severities: f.severities || [],
+                                        count: f.count || 0,
+                                        ds_link: dsLink,
+                                        gt_link: gtLink,
+                                    };
+                                });
+
+                                const loading = typeof reportId === 'number' ? !!conflictsLoadingByReportId[reportId] : false;
+                                const errMsg = typeof reportId === 'number' ? (conflictsErrorByReportId[reportId] || null) : null;
+                                const vErr = typeof dsJobId === 'number' ? (validationByJobError[dsJobId] || null) : null;
+
+                                return (
+                                    <div style={{ padding: 8 }}>
+                                        <Space style={{ marginBottom: 8 }} wrap>
+                                            <Text type='secondary'>mode: {String(mode ?? '-')}</Text>
+                                            <Text type='secondary'>GT job: {String(gtJobId ?? '-')}</Text>
+                                            {errMsg ? <Text type='danger'>{errMsg}</Text> : null}
+                                            {vErr ? <Text type='danger'>{vErr}</Text> : null}
+                                            {loading ? <Spin size='small' /> : null}
+                                        </Space>
+
+                                        {loading ? (
+                                            <div style={{ textAlign: 'center', padding: 12 }}><Spin /></div>
+                                        ) : (mappedRows.length ? (
+                                            <Table
+                                                size='small'
+                                                pagination={{ pageSize: 20, showSizeChanger: true }}
+                                                rowKey={(m: any) => String(m.ds_frame)}
+                                                dataSource={mappedRows}
+                                                columns={[
+                                                    { title: 'DS Frame', dataIndex: 'ds_frame', key: 'ds_frame' },
+                                                    {
+                                                        title: 'GT Frame',
+                                                        dataIndex: 'gt_frame',
+                                                        key: 'gt_frame',
+                                                        render: (v: any) => (typeof v === 'number' ? v : <Text type='secondary'>-</Text>),
+                                                    },
+                                                    {
+                                                        title: 'Severity',
+                                                        key: 'severity',
+                                                        render: (_: any, m: any) => (
+                                                            <Space wrap>
+                                                                {(m.severities || []).map((s: string) => (
+                                                                    <Tag key={s} color={s === 'error' ? 'red' : 'orange'}>{s}</Tag>
+                                                                ))}
+                                                            </Space>
+                                                        ),
+                                                    },
+                                                    {
+                                                        title: 'Type',
+                                                        key: 'type',
+                                                        render: (_: any, m: any) => (
+                                                            <Space wrap>
+                                                                {(m.types || []).map((t: string) => (
+                                                                    <Tag key={t}>{t}</Tag>
+                                                                ))}
+                                                            </Space>
+                                                        ),
+                                                    },
+                                                    { title: 'Count', dataIndex: 'count', key: 'count' },
+                                                    {
+                                                        title: '在 Validation Set',
+                                                        key: 'in_validation',
+                                                        render: (_: any, m: any) => (
+                                                            typeof m.in_validation === 'boolean' ? (
+                                                                m.in_validation ? <Tag color='green'>是</Tag> : <Tag>否</Tag>
+                                                            ) : <Text type='secondary'>-</Text>
+                                                        ),
+                                                    },
+                                                    {
+                                                        title: '跳转',
+                                                        key: 'open',
+                                                        render: (_: any, m: any) => (
+                                                            <Space>
+                                                                {m.ds_link ? <Button type='link' href={m.ds_link} target='_blank'>打开 DS</Button> : <Text type='secondary'>无 task/job</Text>}
+                                                                {m.gt_link ? <Button type='link' href={m.gt_link} target='_blank'>打开 GT</Button> : <Text type='secondary'>无映射/无 GT</Text>}
+                                                            </Space>
+                                                        ),
+                                                    },
+                                                ]}
+                                            />
+                                        ) : (
+                                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='该 job report 暂无 conflicts（可能 errors 来自统计但无明细，或接口无权限）' />
+                                        ))}
+                                    </div>
+                                );
+                            },
+                            onExpand: async (expanded: boolean, r: any) => {
+                                if (!expanded) return;
+                                const reportId = r?.id;
+                                const dsJobId = getJobId(r);
+                                const taskIdHint = (() => {
+                                    const fromReport = getTaskId(r);
+                                    if (kind === 'task') return resource.id;
+                                    if (kind === 'job') return (resource as Job).taskId;
+                                    return fromReport;
+                                })();
+
+                                if (typeof dsJobId === 'number') {
+                                    ensureValidationContext(dsJobId, taskIdHint ?? null);
+                                }
+                                if (typeof reportId === 'number' && !(reportId in conflictsByReportId)) {
+                                    loadConflictsForReport(reportId);
+                                }
+                            },
+                            rowExpandable: (r: any) => r?.target === 'job',
+                        }}
+                        columns={[
+                            { title: 'Report', dataIndex: 'id', key: 'id' },
+                            { title: 'DS Job', key: 'job', render: (_: any, r: any) => getJobId(r) ?? '-' },
+                            { title: 'Errors', key: 'errors', render: (_: any, r: any) => fmtNum(getErrorCount(r?.summary)) },
+                            {
+                                title: '冲突帧数',
+                                key: 'frames',
+                                render: (_: any, r: any) => {
+                                    const list = typeof r?.id === 'number' ? (conflictsByReportId[r.id] ?? null) : null;
+                                    const rows = getConflictFrameRowsFromConflicts(list);
+                                    return rows.length ? rows.length : <Text type='secondary'>-</Text>;
+                                },
+                            },
+                            {
+                                title: '操作',
+                                key: 'actions',
+                                render: (_: any, r: any) => {
+                                    const reportId = r?.id;
+                                    const loading = typeof reportId === 'number' ? !!conflictsLoadingByReportId[reportId] : false;
+                                    return (
+                                        <Button
+                                            size='small'
+                                            icon={<ReloadOutlined />}
+                                            loading={loading}
+                                            onClick={() => {
+                                                if (typeof reportId === 'number') loadConflictsForReport(reportId);
+                                            }}
+                                        >
+                                            刷新 conflicts
+                                        </Button>
+                                    );
+                                },
+                            },
+                        ]}
+                    />
+                ) : (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 job reports' />
+                )}
+                <div style={{ marginTop: 8 }}>
+                    <Text type='secondary' style={{ fontSize: 12 }}>
+                        * 映射逻辑：mode=gt 时 DS frame=GT frame；mode=gt_pool 时用 `job.validation_layout` 的 honeypotFrames→honeypotRealFrames 映射（非 honeypot 帧可能没有对应 GT）。
+                    </Text>
+                </div>
             </Card>
 
             {!!displayedOtherReports.length && (
@@ -613,40 +935,6 @@ export default function QualityTab(
                             )}
                         </Card>
                     )}
-                    <Card size='small' title='Summary'>
-                        {summary ? (
-                            <Space direction='vertical' style={{ width: '100%' }} size='small'>
-                                <Descriptions size='small' bordered column={2}>
-                                    <Descriptions.Item label='Accuracy'>{fmtRatio(summary?.accuracy)}</Descriptions.Item>
-                                    <Descriptions.Item label='Precision'>{fmtRatio(summary?.precision)}</Descriptions.Item>
-                                    <Descriptions.Item label='Recall'>{fmtRatio(summary?.recall)}</Descriptions.Item>
-                                    <Descriptions.Item label='Errors'>{fmtNum(getErrorCount(summary))}</Descriptions.Item>
-                                </Descriptions>
-                                <Space><Text style={{ width: 80 }}>Accuracy</Text><Progress percent={typeof summary?.accuracy === 'number' ? summary.accuracy * 100 : 0} /></Space>
-                                <Space><Text style={{ width: 80 }}>Precision</Text><Progress percent={typeof summary?.precision === 'number' ? summary.precision * 100 : 0} /></Space>
-                                <Space><Text style={{ width: 80 }}>Recall</Text><Progress percent={typeof summary?.recall === 'number' ? summary.recall * 100 : 0} /></Space>
-                            </Space>
-                        ) : (
-                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='该 report 没有 summary 字段' />
-                        )}
-                    </Card>
-                    <Card size='small' title='Report Data' extra={reportDataLoading && <Spin size='small' />}>
-                        {reportData ? (
-                            <pre style={jsonStyle}>{JSON.stringify(reportData, null, 2)}</pre>
-                        ) : (
-                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 Report Data' />
-                        )}
-                    </Card>
-                    <Card size='small' title={`Conflicts (${conflicts?.length ?? 0})`} extra={conflictsLoading && <Spin size='small' />}>
-                        {conflicts && conflicts.length > 0 ? (
-                            <>
-                                <pre style={jsonStyle}>{JSON.stringify(conflicts.slice(0, 200), null, 2)}</pre>
-                                {conflicts.length > 200 && <Text type='secondary'>仅展示前 200 条（避免页面卡顿）</Text>}
-                            </>
-                        ) : (
-                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 Conflicts' />
-                        )}
-                    </Card>
                 </div>
             ) : (
                 !qualityLoading && <Empty description='请选择一个 Report 查看详情' />

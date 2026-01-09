@@ -91,6 +91,7 @@ export default function QualityTab(
     const [reportData, setReportData] = useState<any | null>(null);
     const [conflictsLoading, setConflictsLoading] = useState(false);
     const [conflicts, setConflicts] = useState<any[] | null>(null);
+    const [jobAssignees, setJobAssignees] = useState<Record<number, string | null>>({});
 
     const selectedReport = useMemo(() => (
         reports.find((r: any) => r?.id === selectedReportId) || null
@@ -194,6 +195,7 @@ export default function QualityTab(
         setSelectedReportId(null);
         setReportData(null);
         setCreateRqStatus(null);
+        setJobAssignees({});
 
         try {
             const filter: any = {};
@@ -329,6 +331,41 @@ export default function QualityTab(
     };
 
     useEffect(() => {
+        // Load assignees for displayed job reports (best-effort)
+        let cancelled = false;
+        const loadAssignees = async (): Promise<void> => {
+            try {
+                const jobIds = Array.from(new Set(
+                    (displayedJobReports || [])
+                        .map((r: any) => getJobId(r))
+                        .filter((v: any) => typeof v === 'number' && Number.isFinite(v)),
+                )) as number[];
+
+                const missing = jobIds.filter((jid) => !(jid in jobAssignees));
+                if (!missing.length) return;
+
+                for (const jid of missing) {
+                    try {
+                        const [job] = await core.jobs.get({ jobID: jid });
+                        const username = job?.assignee?.username ?? null;
+                        if (cancelled) return;
+                        setJobAssignees((prev) => ({ ...prev, [jid]: username }));
+                    } catch {
+                        if (cancelled) return;
+                        setJobAssignees((prev) => ({ ...prev, [jid]: null }));
+                    }
+                }
+            } catch {
+                // ignore
+            }
+        };
+
+        loadAssignees();
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [core, displayedJobReports]);
+
+    useEffect(() => {
         loadReports();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [resource.id, kind]);
@@ -454,6 +491,15 @@ export default function QualityTab(
                             { title: 'Report', dataIndex: 'id', key: 'id' },
                             { title: 'Target', dataIndex: 'target', key: 'target' },
                             { title: 'Job', key: 'job', render: (_: any, r: any) => getJobId(r) ?? '-' },
+                            {
+                                title: 'Assignee',
+                                key: 'assignee',
+                                render: (_: any, r: any) => {
+                                    const jid = getJobId(r);
+                                    if (typeof jid !== 'number') return '-';
+                                    return jobAssignees[jid] || '-';
+                                },
+                            },
                             { title: 'Accuracy', key: 'accuracy', render: (_: any, r: any) => fmtRatio(r?.summary?.accuracy) },
                             { title: 'Precision', key: 'precision', render: (_: any, r: any) => fmtRatio(r?.summary?.precision) },
                             { title: 'Recall', key: 'recall', render: (_: any, r: any) => fmtRatio(r?.summary?.recall) },

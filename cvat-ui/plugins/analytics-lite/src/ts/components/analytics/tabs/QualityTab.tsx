@@ -11,7 +11,6 @@ import Spin from 'antd/lib/spin';
 import Table from 'antd/lib/table';
 import Text from 'antd/lib/typography/Text';
 import notification from 'antd/lib/notification';
-import { ReloadOutlined } from '@ant-design/icons';
 import { Request, getCore, Job } from 'cvat-core-wrapper';
 import { Line } from 'react-chartjs-2';
 import {
@@ -68,6 +67,25 @@ function getJobUpdatedMs(job: any): number {
     return Number.isNaN(ms) ? 0 : ms;
 }
 
+function getLatestReportStamp(list: any[]): { createdMs: number; id: number } {
+    if (!Array.isArray(list) || !list.length) {
+        return { createdMs: 0, id: 0 };
+    }
+    return list.reduce((acc, r) => {
+        const createdMs = getCreatedMs(r);
+        const id = typeof r?.id === 'number' ? r.id : 0;
+        if (createdMs > acc.createdMs) return { createdMs, id };
+        if (createdMs === acc.createdMs && id > acc.id) return { createdMs, id };
+        return acc;
+    }, { createdMs: 0, id: 0 });
+}
+
+function isNewerStamp(a: { createdMs: number; id: number }, b: { createdMs: number; id: number }): boolean {
+    if (a.createdMs > b.createdMs) return true;
+    if (a.createdMs < b.createdMs) return false;
+    return a.id > b.id;
+}
+
 function getErrorCount(s: any): number | null {
     return s?.errorCount ?? s?.error_count ?? null;
 }
@@ -87,6 +105,31 @@ function uniqNums(xs: number[]): number[] {
     return Array.from(new Set(xs.filter((x) => typeof x === 'number' && Number.isFinite(x)))).sort((a, b) => a - b);
 }
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        window.setTimeout(resolve, ms);
+    });
+}
+
+function parseDuplicateRequestMessage(message: string): {
+    action: string;
+    target: string;
+    targetId: number;
+    subresource?: string;
+} | null {
+    const match = message.match(/action=([^&]+)&target=([^&]+)&target_id=(\d+)(?:&subresource=([^&]+))?/);
+    if (!match) return null;
+    const [, action, target, targetIdStr, subresource] = match;
+    const targetId = Number(targetIdStr);
+    if (!action || !target || !Number.isFinite(targetId)) return null;
+    return {
+        action,
+        target,
+        targetId,
+        subresource: subresource || undefined,
+    };
+}
+
 export default function QualityTab(
     props: AnalyticsLiteProps & { kind: ResourceKind; debugEnabled: boolean },
 ): JSX.Element {
@@ -101,6 +144,7 @@ export default function QualityTab(
     const [createRqStatus, setCreateRqStatus] = useState<any | null>(null);
     const [reports, setReports] = useState<any[]>([]);
     const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
+    const [expandedJobReportId, setExpandedJobReportId] = useState<number | null>(null);
     // We don't show raw report data/conflicts blocks in UI anymore.
     // Conflicts are loaded lazily per job report for the "错误帧定位" table below.
     const [jobAssignees, setJobAssignees] = useState<Record<number, string | null>>({});
@@ -120,9 +164,8 @@ export default function QualityTab(
         reports.find((r: any) => r?.id === selectedReportId) || null
     ), [reports, selectedReportId]);
 
-    const jobHistory = useMemo(() => {
-        if (kind !== 'job') return [];
-        const jid = resource?.id;
+    const getJobHistoryForJobId = (jid: number): any[] => {
+        if (!jid) return [];
         const jobReports = reports
             .filter((r: any) => r?.target === 'job' && getJobId(r) === jid)
             .slice()
@@ -150,7 +193,8 @@ export default function QualityTab(
                 targetLastUpdatedMs: getTargetLastUpdatedMs(r),
             };
         });
-    }, [kind, reports, resource]);
+    };
+
 
     const latestJobReportForCurrentJob = useMemo(() => {
         if (kind !== 'job') return null;
@@ -313,14 +357,18 @@ export default function QualityTab(
         return rows;
     };
 
-    const loadReports = async (): Promise<void> => {
+    const loadReports = async (): Promise<any[]> => {
         setQualityError(null);
         setQualityLoading(true);
         setQualityDebug(null);
         setReports([]);
-        setSelectedReportId(null);
+            setSelectedReportId(null);
+            setExpandedJobReportId(null);
         setCreateRqStatus(null);
         setJobAssignees({});
+        setConflictsByReportId({});
+        setConflictsLoadingByReportId({});
+        setConflictsErrorByReportId({});
 
         try {
             const filter: any = {};
@@ -372,9 +420,11 @@ export default function QualityTab(
                     } : null,
                 });
             }
+            return asArray;
         } catch (err: unknown) {
             if (isCvatError(err) && (err.code === 403 || err.code === 401)) setQualityError('没有权限访问 Quality reports');
             else setQualityError(err instanceof Error ? err.message : '无法加载 Quality reports');
+            return [];
         } finally {
             setQualityLoading(false);
         }
@@ -400,6 +450,7 @@ export default function QualityTab(
 
     const createQualityReport = async (): Promise<void> => {
         try {
+            if (creatingReport) return;
             if (kind === 'job') {
                 const jobUpdatedMs = getJobUpdatedMs(resource);
                 const reportTargetUpdatedMs = latestJobReportForCurrentJob ?
@@ -427,8 +478,15 @@ export default function QualityTab(
             if (kind === 'job') body.task_id = (resource as Job).taskId;
 
             const response = await core.server.request(url, { method: 'POST', data: body });
-            const rqId: string | null = response?.rq_id || response?.id || null;
+            const responseData = (response && typeof response === 'object' && 'data' in response) ? (response as any).data : response;
+            const rqId: string | null = responseData?.rq_id || null;
+            const reportId = typeof responseData?.id === 'number' ? responseData.id : null;
             if (!rqId || typeof rqId !== 'string') {
+                if (reportId) {
+                    notification.success({ message: 'Quality Report 已生成，正在刷新列表…' });
+                    await loadReports();
+                    return;
+                }
                 notification.warning({ message: '已发送创建请求，但未获得 rq_id', description: '你可以稍后点“刷新列表”看看是否已生成 report。' });
                 await loadReports();
                 return;
@@ -444,7 +502,69 @@ export default function QualityTab(
             notification.success({ message: 'Quality Report 已生成，正在刷新列表…' });
             await loadReports();
         } catch (err: unknown) {
-            setQualityError(err instanceof Error ? err.message : '创建 Quality Report 失败');
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const dupInfo = parseDuplicateRequestMessage(errMsg);
+            if (dupInfo) {
+                setQualityError(null);
+                setCreateRqId(null);
+                setCreateRqStatus(null);
+                setCreatingReport(true);
+                try {
+                    const baselineStamp = getLatestReportStamp(reports);
+                    const findExistingRequest = async (): Promise<Request | null> => {
+                        const list = await core.requests.list();
+                        const asArray = Array.isArray(list) ? list : Array.from(list as any[]);
+                        const byTarget = (req: Request): boolean => {
+                            const op = req.operation || {};
+                            if (op.type !== dupInfo.action) return false;
+                            if (op.target !== dupInfo.target) return false;
+                            if (dupInfo.target === 'task') return op.taskID === dupInfo.targetId;
+                            if (dupInfo.target === 'project') return op.projectID === dupInfo.targetId;
+                            if (dupInfo.target === 'job') return op.jobID === dupInfo.targetId;
+                            return false;
+                        };
+                        return (asArray as Request[]).find(byTarget) || null;
+                    };
+
+                    let existing: Request | null = await findExistingRequest();
+                    if (!existing) {
+                        for (let i = 0; i < 8; i++) {
+                            await sleep(1500);
+                            existing = await findExistingRequest();
+                            if (existing) break;
+                        }
+                    }
+
+                    if (existing) {
+                        setCreateRqId(existing.id);
+                        notification.info({ message: '已有计算在进行中', description: `rq_id: ${existing.id}` });
+                        await core.requests.listen(existing.id, {
+                            initialRequest: existing,
+                            callback: (req: Request) => {
+                                try { setCreateRqStatus(req.toJSON()); } catch { /* ignore */ }
+                            },
+                        });
+                        notification.success({ message: 'Quality Report 已生成，正在刷新列表…' });
+                        await loadReports();
+                    } else {
+                        notification.warning({
+                            message: '已有计算在进行中',
+                            description: '未能获取请求 ID，正在等待结果刷新…',
+                        });
+                        for (let i = 0; i < 10; i++) {
+                            const list = await loadReports();
+                            if (isNewerStamp(getLatestReportStamp(list), baselineStamp)) break;
+                            await sleep(3000);
+                        }
+                    }
+                } catch (listenErr: unknown) {
+                    setQualityError(listenErr instanceof Error ? listenErr.message : '创建 Quality Report 失败');
+                } finally {
+                    setCreatingReport(false);
+                }
+                return;
+            }
+            setQualityError(errMsg || '创建 Quality Report 失败');
         } finally {
             setCreatingReport(false);
         }
@@ -490,6 +610,19 @@ export default function QualityTab(
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [resource.id, kind]);
 
+    useEffect(() => {
+        if (kind !== 'task') return;
+        if (!displayedJobReports.length) return;
+        const reportIds = displayedJobReports
+            .map((r: any) => r?.id)
+            .filter((id: any) => typeof id === 'number' && Number.isFinite(id)) as number[];
+        if (!reportIds.length) return;
+        reportIds.forEach((id) => {
+            loadConflictsForReport(id);
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [kind, displayedJobReports]);
+
     return (
         <Space direction='vertical' size='middle' style={{ width: '100%' }}>
             {debugEnabled && (
@@ -518,7 +651,6 @@ export default function QualityTab(
 
             <Card size='small'>
                 <Space wrap>
-                    <Button icon={<ReloadOutlined />} onClick={loadReports} disabled={qualityLoading}>刷新列表</Button>
                     <Button
                         type='primary'
                         loading={creatingReport}
@@ -545,9 +677,6 @@ export default function QualityTab(
                         </>
                     )}
                 </Space>
-                <div style={{ marginTop: 8 }}>
-                    <Text type='secondary' style={{ fontSize: 12 }}>* 优先复用后端 `/api/quality/*`</Text>
-                </div>
             </Card>
 
             {qualityError && <Alert type='error' message={qualityError} showIcon />}
@@ -560,16 +689,9 @@ export default function QualityTab(
                             type='warning'
                             showIcon
                             message='当前任务/作业还没有生成质量报表'
-                            description={(
-                                <>
-                                    <div>你打开的 quality-control 页面是 premium 占位，但后端 API 仍可创建报表。</div>
-                                    <div>点击下面按钮会调用 `POST /api/quality/reports` 并自动轮询 `GET /api/requests/&lt;rq_id&gt;`。</div>
-                                </>
-                            )}
                         />
                         <Space>
                             <Button type='primary' loading={creatingReport} onClick={createQualityReport}>生成 Quality Report</Button>
-                            <Button disabled={creatingReport} onClick={loadReports}>只刷新列表</Button>
                         </Space>
                         {createRqId && (
                             <Alert
@@ -592,12 +714,97 @@ export default function QualityTab(
                     `Job Reports (每个 job 最新: ${displayedJobReports.length} / 原始 ${reports.filter((r: any) => r?.target === 'job').length})`}
             >
                 {displayedJobReports.length ? (
-                    <Table
+                <Table
                         size='small'
                         pagination={{ pageSize: 10, showSizeChanger: true }}
                         rowKey={(r: any) => r.id}
                         dataSource={displayedJobReports}
-                        onRow={(r: any) => ({ onClick: () => setSelectedReportId(r.id), style: { cursor: 'pointer' } })}
+                        onRow={(r: any) => ({
+                            onClick: () => {
+                                setSelectedReportId(r.id);
+                                setExpandedJobReportId((prev) => (prev === r.id ? null : r.id));
+                            },
+                            style: { cursor: 'pointer' },
+                        })}
+                        expandable={{
+                            expandedRowKeys: expandedJobReportId ? [expandedJobReportId] : [],
+                            onExpand: (expanded: boolean, r: any) => {
+                                if (!expanded) {
+                                    setExpandedJobReportId(null);
+                                    return;
+                                }
+                                setExpandedJobReportId(r.id);
+                            },
+                            expandedRowRender: (r: any) => {
+                                const jid = getJobId(r);
+                                if (typeof jid !== 'number') {
+                                    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='无法解析 job id' />;
+                                }
+                                const history = getJobHistoryForJobId(jid);
+                                if (history.length < 2) {
+                                    return (
+                                        <Empty
+                                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                            description={history.length === 1 ? '只有 1 次计算结果，趋势图需要至少 2 次' : '暂无趋势数据'}
+                                        />
+                                    );
+                                }
+                                return (
+                                    <div style={{ padding: 8 }}>
+                                        <div style={{ height: 260 }}>
+                                            <Line
+                                                data={{
+                                                    labels: history.map((p: any) => p.label),
+                                                    datasets: [
+                                                        {
+                                                            label: 'Accuracy (%)',
+                                                            data: history.map((p: any) => (typeof p.accuracy === 'number' ? p.accuracy * 100 : null)),
+                                                            borderColor: '#1677ff',
+                                                            backgroundColor: 'rgba(22, 119, 255, 0.15)',
+                                                            tension: 0.25,
+                                                            spanGaps: true,
+                                                        },
+                                                        {
+                                                            label: 'Precision (%)',
+                                                            data: history.map((p: any) => (typeof p.precision === 'number' ? p.precision * 100 : null)),
+                                                            borderColor: '#52c41a',
+                                                            backgroundColor: 'rgba(82, 196, 26, 0.15)',
+                                                            tension: 0.25,
+                                                            spanGaps: true,
+                                                        },
+                                                        {
+                                                            label: 'Recall (%)',
+                                                            data: history.map((p: any) => (typeof p.recall === 'number' ? p.recall * 100 : null)),
+                                                            borderColor: '#faad14',
+                                                            backgroundColor: 'rgba(250, 173, 20, 0.15)',
+                                                            tension: 0.25,
+                                                            spanGaps: true,
+                                                        },
+                                                    ],
+                                                }}
+                                                options={{
+                                                    responsive: true,
+                                                    maintainAspectRatio: false,
+                                                    plugins: {
+                                                        legend: { position: 'top' as const },
+                                                        tooltip: { mode: 'index' as const, intersect: false },
+                                                    },
+                                                    interaction: { mode: 'index' as const, intersect: false },
+                                                    scales: {
+                                                        y: {
+                                                            min: 0,
+                                                            max: 100,
+                                                            ticks: { callback: (v: any) => `${v}%` },
+                                                        },
+                                                    },
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            },
+                            rowExpandable: (r: any) => r?.target === 'job',
+                        }}
                         columns={[
                             { title: 'Report', dataIndex: 'id', key: 'id' },
                             { title: 'Target', dataIndex: 'target', key: 'target' },
@@ -638,6 +845,7 @@ export default function QualityTab(
                         rowKey={(r: any) => r.id}
                         dataSource={displayedJobReports}
                         expandable={{
+                            expandRowByClick: true,
                             expandedRowRender: (r: any) => {
                                 const reportId = r?.id;
                                 const dsJobId = getJobId(r);
@@ -809,26 +1017,6 @@ export default function QualityTab(
                                     return rows.length ? rows.length : <Text type='secondary'>-</Text>;
                                 },
                             },
-                            {
-                                title: '操作',
-                                key: 'actions',
-                                render: (_: any, r: any) => {
-                                    const reportId = r?.id;
-                                    const loading = typeof reportId === 'number' ? !!conflictsLoadingByReportId[reportId] : false;
-                                    return (
-                                        <Button
-                                            size='small'
-                                            icon={<ReloadOutlined />}
-                                            loading={loading}
-                                            onClick={() => {
-                                                if (typeof reportId === 'number') loadConflictsForReport(reportId);
-                                            }}
-                                        >
-                                            刷新 conflicts
-                                        </Button>
-                                    );
-                                },
-                            },
                         ]}
                     />
                 ) : (
@@ -841,106 +1029,10 @@ export default function QualityTab(
                 </div>
             </Card>
 
-            {!!displayedOtherReports.length && (
-                <Card size='small' title={`其他 Reports（target!=job，共 ${displayedOtherReports.length}）`}>
-                    <Table
-                        size='small'
-                        pagination={{ pageSize: 10, showSizeChanger: true }}
-                        rowKey={(r: any) => r.id}
-                        dataSource={displayedOtherReports}
-                        onRow={(r: any) => ({ onClick: () => setSelectedReportId(r.id), style: { cursor: 'pointer' } })}
-                        columns={[
-                            { title: 'Report', dataIndex: 'id', key: 'id' },
-                            { title: 'Target', dataIndex: 'target', key: 'target' },
-                            {
-                                title: 'Created',
-                                key: 'created',
-                                render: (_: any, r: any) => {
-                                    const dt = getCreatedDateStr(r);
-                                    try { return dt ? new Date(dt).toLocaleString() : '-'; } catch { return dt || '-'; }
-                                },
-                            },
-                            { title: 'Errors', key: 'errors', render: (_: any, r: any) => fmtNum(getErrorCount(r?.summary)) },
-                        ]}
-                    />
-                </Card>
-            )}
 
-            {selectedReportId ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    {kind === 'job' && (
-                        <Card
-                            size='small'
-                            title={`指标趋势（Accuracy / Precision / Recall，共 ${jobHistory.length} 次）`}
-                            extra={latestJobReportForCurrentJob ? (
-                                <Text type='secondary' style={{ fontSize: 12 }}>
-                                    job.updated: {getJobUpdatedStr(resource) || '-'} / last report target_last_updated: {getTargetLastUpdatedStr(latestJobReportForCurrentJob) || getCreatedDateStr(latestJobReportForCurrentJob) || '-'}
-                                </Text>
-                            ) : null}
-                        >
-                            {jobHistory.length >= 2 ? (
-                                <Line
-                                    data={{
-                                        labels: jobHistory.map((p: any) => p.label),
-                                        datasets: [
-                                            {
-                                                label: 'Accuracy (%)',
-                                                data: jobHistory.map((p: any) => (typeof p.accuracy === 'number' ? p.accuracy * 100 : null)),
-                                                borderColor: '#1677ff',
-                                                backgroundColor: 'rgba(22, 119, 255, 0.15)',
-                                                tension: 0.25,
-                                                spanGaps: true,
-                                            },
-                                            {
-                                                label: 'Precision (%)',
-                                                data: jobHistory.map((p: any) => (typeof p.precision === 'number' ? p.precision * 100 : null)),
-                                                borderColor: '#52c41a',
-                                                backgroundColor: 'rgba(82, 196, 26, 0.15)',
-                                                tension: 0.25,
-                                                spanGaps: true,
-                                            },
-                                            {
-                                                label: 'Recall (%)',
-                                                data: jobHistory.map((p: any) => (typeof p.recall === 'number' ? p.recall * 100 : null)),
-                                                borderColor: '#faad14',
-                                                backgroundColor: 'rgba(250, 173, 20, 0.15)',
-                                                tension: 0.25,
-                                                spanGaps: true,
-                                            },
-                                        ],
-                                    }}
-                                    options={{
-                                        responsive: true,
-                                        maintainAspectRatio: false,
-                                        plugins: {
-                                            legend: { position: 'top' as const },
-                                            tooltip: { mode: 'index' as const, intersect: false },
-                                        },
-                                        interaction: { mode: 'index' as const, intersect: false },
-                                        scales: {
-                                            y: {
-                                                min: 0,
-                                                max: 100,
-                                                ticks: { callback: (v: any) => `${v}%` },
-                                            },
-                                        },
-                                    }}
-                                    height={220}
-                                />
-                            ) : (
-                                <Empty
-                                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                                    description={jobHistory.length === 1 ? '只有 1 次计算结果，趋势图需要至少 2 次' : '暂无趋势数据'}
-                                />
-                            )}
-                        </Card>
-                    )}
-                </div>
-            ) : (
+            {selectedReportId ? null : (
                 !qualityLoading && <Empty description='请选择一个 Report 查看详情' />
             )}
         </Space>
     );
 }
-
-

@@ -193,6 +193,14 @@ function JobItem(props: Readonly<Props>): JSX.Element {
                             <Text type='secondary'>{`${formatDate(created)}`}</Text>
                         </Col>
                     </Row>
+                    {job.projectName && (
+                        <Row className='cvat-job-item-project-info'>
+                            <Col>
+                                <Text>Project: </Text>
+                                <Text type='secondary'>{job.projectName}</Text>
+                            </Col>
+                        </Row>
+                    )}
                     <Row>
                         <Col>
                             <Text>Updated: </Text>

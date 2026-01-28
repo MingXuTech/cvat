@@ -64,6 +64,7 @@ function JobCardComponent(props: Readonly<Props>): JSX.Element {
         tag = 'Consensus';
     }
 
+    const projectName = job.projectName;
     const cardClassName = `cvat-job-page-list-item${selected ? ' cvat-item-selected' : ''}`;
 
     /* eslint-disable jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */
@@ -117,7 +118,59 @@ function JobCardComponent(props: Readonly<Props>): JSX.Element {
             jobInstance={job}
             consensusJobsPresent={false}
             dropdownTrigger={['contextMenu']}
-            triggerElement={card}
+            triggerElement={(
+                <Card
+                    ref={itemRef}
+                    style={{ ...style, height }}
+                    className={cardClassName}
+                    cover={(
+                        <>
+                            <Preview
+                                job={job}
+                                onClick={handleCardClick}
+                                loadingClassName='cvat-job-item-loading-preview'
+                                emptyPreviewClassName='cvat-job-item-empty-preview'
+                                previewWrapperClassName='cvat-jobs-page-job-item-card-preview-wrapper'
+                                previewClassName='cvat-jobs-page-job-item-card-preview'
+                            />
+                            <div className='cvat-job-page-list-item-badges'>
+                                <div className='cvat-job-page-list-item-top-row'>
+                                    <div className='cvat-job-page-list-item-id'>
+                                ID:
+                                        {` ${job.id}`}
+                                    </div>
+                                    {tag && <div className='cvat-job-page-list-item-type'>{tag}</div>}
+                                </div>
+                                {projectName && (
+                                    <div className='cvat-job-page-list-item-project'>
+                                        Project:
+                                        {` ${projectName}`}
+                                    </div>
+                                )}
+                            </div>
+                            <div className='cvat-job-page-list-item-dimension'>{job.dimension.toUpperCase()}</div>
+                        </>
+                    )}
+                    hoverable
+                    onClick={onClick}
+                >
+                    <Descriptions column={1} size='small'>
+                        <Descriptions.Item label='Stage and state'>{`${job.stage} ${job.state}`}</Descriptions.Item>
+                        <Descriptions.Item label='Frames'>{job.stopFrame - job.startFrame + 1}</Descriptions.Item>
+                        {job.assignee ? (
+                            <Descriptions.Item label='Assignee'>{job.assignee.username}</Descriptions.Item>
+                        ) : (
+                            <Descriptions.Item label='Assignee'> </Descriptions.Item>
+                        )}
+                    </Descriptions>
+                    <div
+                        onClick={handleContextMenuClick}
+                        className='cvat-job-card-more-button cvat-actions-menu-button'
+                    >
+                        <MoreOutlined className='cvat-menu-icon' />
+                    </div>
+                </Card>
+            )}
         />
     );
 }

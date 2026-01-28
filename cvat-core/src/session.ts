@@ -521,6 +521,7 @@ export class Job extends Session {
         stop_frame?: number;
         frame_count?: number;
         project_id: number | null;
+        project_name: string | null;
         guide_id: number | null;
         task_id: number;
         labels: Label[];
@@ -550,6 +551,7 @@ export class Job extends Session {
             stop_frame: undefined,
             frame_count: undefined,
             project_id: null,
+            project_name: null,
             guide_id: null,
             task_id: null,
             labels: [],
@@ -572,6 +574,7 @@ export class Job extends Session {
         this.#data.stop_frame = initialData.stop_frame ?? this.#data.stop_frame;
         this.#data.frame_count = initialData.frame_count ?? this.#data.frame_count;
         this.#data.task_id = initialData.task_id ?? this.#data.task_id;
+        this.#data.project_name = initialData.project_name ?? this.#data.project_name;
         this.#data.dimension = initialData.dimension ?? this.#data.dimension;
         this.#data.data_compressed_chunk_type =
             initialData.data_compressed_chunk_type ?? this.#data.data_compressed_chunk_type;
@@ -631,6 +634,7 @@ export class Job extends Session {
         this.#data.stage = data.stage ?? this.#data.stage;
         this.#data.state = data.state ?? this.#data.state;
         this.#data.project_id = data.project_id ?? this.#data.project_id;
+        this.#data.project_name = data.project_name ?? this.#data.project_name;
         this.#data.guide_id = data.guide_id ?? this.#data.guide_id;
         this.#data.updated_date = data.updated_date ?? this.#data.updated_date;
         this.#data.bug_tracker = data.bug_tracker ?? this.#data.bug_tracker;
@@ -669,6 +673,10 @@ export class Job extends Session {
 
     public get projectId(): number | null {
         return this.#data.project_id;
+    }
+
+    public get projectName(): string | null {
+        return this.#data.project_name;
     }
 
     public get guideId(): number | null {

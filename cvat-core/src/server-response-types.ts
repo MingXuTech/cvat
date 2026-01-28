@@ -149,6 +149,7 @@ export interface SerializedJob {
     labels: { count: number; url: string };
     mode: TaskMode;
     project_id: number | null;
+    project_name: string | null;
     guide_id: number | null;
     stage: JobStage;
     state: JobState;

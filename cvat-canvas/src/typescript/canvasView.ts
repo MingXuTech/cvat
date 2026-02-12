@@ -64,6 +64,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
     private gridPattern: SVGPatternElement;
     private controller: CanvasController;
     private svgShapes: Record<number, SVG.Shape>;
+    private svgMaskBBoxes: Record<number, SVG.Rect>;
     private svgTexts: Record<number, SVG.Text>;
     private isImageLoading: boolean;
     private issueRegionPattern_1: SVG.Pattern;
@@ -144,6 +145,57 @@ export class CanvasViewImpl implements CanvasView, Listener {
     private translateFromCanvas(points: number[]): number[] {
         const { offset } = this.controller.geometry;
         return translateFromCanvas(offset, points);
+    }
+
+    private updateMaskBoundingBoxShape(clientID: number, points: number[]): void {
+        const maskBoundingBox = this.svgMaskBBoxes[clientID];
+        if (!maskBoundingBox) {
+            return;
+        }
+
+        const [left, top, right, bottom] = points.slice(-4);
+        maskBoundingBox.move(this.geometry.offset + left, this.geometry.offset + top);
+        maskBoundingBox.attr({
+            width: right - left + 1,
+            height: bottom - top + 1,
+        });
+    }
+
+    private updateMaskBoundingBoxFromShape(clientID: number, shape: SVG.Shape): void {
+        const maskBoundingBox = this.svgMaskBBoxes[clientID];
+        if (!maskBoundingBox) {
+            return;
+        }
+
+        maskBoundingBox.move(shape.x(), shape.y());
+        maskBoundingBox.attr({
+            width: shape.width(),
+            height: shape.height(),
+        });
+    }
+
+    private updateMaskBoundingBoxVisibility(clientID: number, state: any = this.drawnStates[clientID]): void {
+        const maskBoundingBox = this.svgMaskBBoxes[clientID];
+        if (!maskBoundingBox || !state || state.shapeType !== 'mask') {
+            return;
+        }
+
+        const visible = this.configuration.showAllMaskBoundingBoxes &&
+            !state.hidden &&
+            !state.outside &&
+            !this.isInnerHidden(clientID);
+
+        if (visible) {
+            maskBoundingBox.removeClass('cvat_canvas_hidden');
+        } else {
+            maskBoundingBox.addClass('cvat_canvas_hidden');
+        }
+    }
+
+    private updateMaskBoundingBoxesVisibility(): void {
+        for (const clientID of Object.keys(this.svgMaskBBoxes)) {
+            this.updateMaskBoundingBoxVisibility(+clientID);
+        }
     }
 
     private translatePointsFromRotatedShape(
@@ -237,6 +289,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 }
             }
         }
+
+        this.updateMaskBoundingBoxVisibility(clientID);
     }
 
     private dispatchCanceledEvent(): void {
@@ -290,6 +344,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
             } else if (shapeType === 'mask') {
                 const [left, top] = points.slice(-4);
                 drawnShape.move(this.geometry.offset + left, this.geometry.offset + top);
+                this.updateMaskBoundingBoxFromShape(clientID, drawnShape);
             } else {
                 throw new Error('Not implemented');
             }
@@ -1191,6 +1246,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
                     skeletonSVGTemplate = skeletonSVGTemplate ?? makeSVGFromTemplate(state.label.structure.svg);
                     setupSkeletonEdges(shape as SVG.G, skeletonSVGTemplate);
+                } else if (state.shapeType === 'mask') {
+                    this.updateMaskBoundingBoxFromShape(state.clientID, shape);
                 }
             }).on('dragend', (): void => {
                 if (aborted) {
@@ -1523,6 +1580,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
         this.controller = controller;
         this.geometry = controller.geometry;
         this.svgShapes = {};
+        this.svgMaskBBoxes = {};
         this.svgTexts = {};
         this.drawnStates = {};
         this.drawnIssueRegions = {};
@@ -1856,6 +1914,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
             }
 
             this.configuration = configuration;
+            this.updateMaskBoundingBoxesVisibility();
             if (withUpdatingShapeViews) {
                 updateShapeViews(Object.values(this.drawnStates));
             }
@@ -2438,6 +2497,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
             const { clientID } = state;
             const drawnState = this.drawnStates[clientID];
             const shape = this.svgShapes[state.clientID];
+            const maskBoundingBox = this.svgMaskBBoxes[state.clientID];
             const text = this.svgTexts[state.clientID];
             const isInvisible = state.hidden || state.outside || this.isInnerHidden(state.clientID);
 
@@ -2460,11 +2520,19 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 }
             }
 
+            if (state.shapeType === 'mask') {
+                this.updateMaskBoundingBoxVisibility(clientID, state);
+            }
+
             if (drawnState.zOrder !== state.zOrder) {
                 if (state.shapeType === 'points') {
                     shape.remember('_selectHandler').nested.attr('data-z-order', state.zOrder);
                 } else {
                     shape.attr('data-z-order', state.zOrder);
+                }
+
+                if (maskBoundingBox) {
+                    maskBoundingBox.attr('data-z-order', state.zOrder);
                 }
             }
 
@@ -2474,6 +2542,14 @@ export class CanvasViewImpl implements CanvasView, Listener {
                     instance.addClass('cvat_canvas_shape_occluded');
                 } else {
                     instance.removeClass('cvat_canvas_shape_occluded');
+                }
+
+                if (maskBoundingBox) {
+                    if (state.occluded) {
+                        maskBoundingBox.attr('stroke-dasharray', '5');
+                    } else {
+                        maskBoundingBox.node.removeAttribute('stroke-dasharray');
+                    }
                 }
             }
 
@@ -2611,6 +2687,11 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 delete this.svgShapes[state.clientID];
             }
 
+            if (state.clientID in this.svgMaskBBoxes) {
+                this.svgMaskBBoxes[state.clientID].remove();
+                delete this.svgMaskBBoxes[state.clientID];
+            }
+
             if (state.clientID in this.drawnStates) {
                 delete this.drawnStates[state.clientID];
             }
@@ -2673,10 +2754,10 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
     private sortObjects(): void {
         // TODO: Can be significantly optimized
-        const states = Array.from(this.content.getElementsByClassName('cvat_canvas_shape')).map((state: SVGElement): [
-            SVGElement,
-            number,
-        ] => [state, +state.getAttribute('data-z-order')]);
+        const states = [
+            ...Array.from(this.content.getElementsByClassName('cvat_canvas_shape')),
+            ...Array.from(this.content.getElementsByClassName('cvat_canvas_mask_bbox')),
+        ].map((state: Element): [SVGElement, number] => [state as SVGElement, +state.getAttribute('data-z-order')]);
 
         const crosshair = Array.from(this.content.getElementsByClassName('cvat_canvas_crosshair'));
         crosshair.forEach((line: SVGLineElement): void => this.content.append(line));
@@ -3356,6 +3437,29 @@ export class CanvasViewImpl implements CanvasView, Listener {
         return cube;
     }
 
+    private addMaskBoundingBox(points: number[], state: any, strokeColor: string): void {
+        const maskBoundingBox = this.adoptedContent
+            .rect(0, 0)
+            .attr({
+                clientID: state.clientID,
+                id: `cvat_canvas_mask_bbox_${state.clientID}`,
+                fill: 'none',
+                stroke: strokeColor,
+                'stroke-width': consts.BASE_STROKE_WIDTH / this.geometry.scale,
+                'data-z-order': state.zOrder,
+                'pointer-events': 'none',
+            })
+            .addClass('cvat_canvas_mask_bbox');
+
+        if (state.occluded) {
+            maskBoundingBox.attr('stroke-dasharray', '5');
+        }
+
+        this.svgMaskBBoxes[state.clientID] = maskBoundingBox;
+        this.updateMaskBoundingBoxShape(state.clientID, points);
+        this.updateMaskBoundingBoxVisibility(state.clientID, state);
+    }
+
     private addMask(points: number[], state: any): SVG.Image {
         const colorization = this.getShapeColorization(state);
         const color = fabric.Color.fromHex(colorization.fill).getSource();
@@ -3400,6 +3504,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
         if (state.isGroundTruth) {
             image.addClass('cvat_canvas_ground_truth');
         }
+
+        this.addMaskBoundingBox(points, state, colorization.stroke);
 
         return image;
     }

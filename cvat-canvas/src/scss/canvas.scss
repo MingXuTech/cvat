@@ -13,6 +13,11 @@
     stroke-opacity: 1;
 }
 
+.cvat_canvas_mask_bbox {
+    fill: none;
+    pointer-events: none;
+}
+
 g.cvat_canvas_shape {
     > circle {
         fill-opacity: 1;

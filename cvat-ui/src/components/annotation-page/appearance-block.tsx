@@ -25,6 +25,7 @@ import {
     changeSelectedShapesOpacity as changeSelectedShapesOpacityAction,
     changeShapesOutlinedBorders as changeShapesOutlinedBordersAction,
     changeShowBitmap as changeShowBitmapAction,
+    changeShowAllMaskBoundingBoxes as changeShowAllMaskBoundingBoxesAction,
     changeShowProjections as changeShowProjectionsAction,
     changeOrientationVisibility as changeOrientationVisibilityAction,
 } from 'actions/settings-actions';
@@ -52,6 +53,7 @@ interface StateToProps {
     outlined: boolean;
     outlineColor: string;
     showBitmap: boolean;
+    showAllMaskBoundingBoxes: boolean;
     showProjections: boolean;
     orientationVisibility: OrientationVisibility;
     workspace: Workspace;
@@ -66,6 +68,7 @@ interface DispatchToProps {
     changeSelectedShapesOpacity(value: number): void;
     changeShapesOutlinedBorders(outlined: boolean, color: string): void;
     changeShowBitmap(event: CheckboxChangeEvent): void;
+    changeShowAllMaskBoundingBoxes(event: CheckboxChangeEvent): void;
     changeShowProjections(event: CheckboxChangeEvent): void;
     changeOrientationVisibility(orientationVisibility: Partial<OrientationVisibility>): void;
 }
@@ -79,7 +82,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         },
         settings: {
             shapes: {
-                colorBy, opacity, selectedOpacity, outlined, outlineColor, showBitmap, showProjections,
+                colorBy, opacity, selectedOpacity, outlined, outlineColor, showBitmap, showAllMaskBoundingBoxes, showProjections,
                 orientationVisibility,
             },
         },
@@ -94,6 +97,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         outlined,
         outlineColor,
         showBitmap,
+        showAllMaskBoundingBoxes,
         showProjections,
         workspace,
         orientationVisibility,
@@ -122,6 +126,9 @@ function mapDispatchToProps(dispatch: Dispatch<AnyAction>): DispatchToProps {
         changeShowBitmap(event: CheckboxChangeEvent): void {
             dispatch(changeShowBitmapAction(event.target.checked));
         },
+        changeShowAllMaskBoundingBoxes(event: CheckboxChangeEvent): void {
+            dispatch(changeShowAllMaskBoundingBoxesAction(event.target.checked));
+        },
         changeShowProjections(event: CheckboxChangeEvent): void {
             dispatch(changeShowProjectionsAction(event.target.checked));
         },
@@ -142,6 +149,7 @@ function AppearanceBlock(props: Props): JSX.Element {
         outlined,
         outlineColor,
         showBitmap,
+        showAllMaskBoundingBoxes,
         showProjections,
         orientationVisibility,
         collapseAppearance,
@@ -150,6 +158,7 @@ function AppearanceBlock(props: Props): JSX.Element {
         changeSelectedShapesOpacity,
         changeShapesOutlinedBorders,
         changeShowBitmap,
+        changeShowAllMaskBoundingBoxes,
         changeShowProjections,
         changeOrientationVisibility,
         jobInstance,
@@ -254,6 +263,15 @@ function AppearanceBlock(props: Props): JSX.Element {
                                 checked={showBitmap}
                             >
                                 Show bitmap
+                            </Checkbox>
+                        )}
+                        {is2D && (
+                            <Checkbox
+                                className='cvat-appearance-show-all-mask-bboxes-checkbox'
+                                onChange={changeShowAllMaskBoundingBoxes}
+                                checked={showAllMaskBoundingBoxes}
+                            >
+                                Show all mask bounding boxes
                             </Checkbox>
                         )}
                         {is2D && (

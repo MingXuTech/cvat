@@ -86,6 +86,7 @@ export interface Configuration {
     undefinedAttrValue?: string;
     showProjections?: boolean;
     showConflicts?: boolean;
+    showAllMaskBoundingBoxes?: boolean;
     forceDisableEditing?: boolean;
     intelligentPolygonCrop?: boolean;
     forceFrameUpdate?: boolean;
@@ -405,6 +406,7 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
                 displayAllText: false,
                 showProjections: false,
                 showConflicts: false,
+                showAllMaskBoundingBoxes: false,
                 forceDisableEditing: false,
                 intelligentPolygonCrop: false,
                 forceFrameUpdate: false,
@@ -1002,6 +1004,9 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
 
         if (typeof configuration.showConflicts === 'boolean') {
             this.data.configuration.showConflicts = configuration.showConflicts;
+        }
+        if (typeof configuration.showAllMaskBoundingBoxes === 'boolean') {
+            this.data.configuration.showAllMaskBoundingBoxes = configuration.showAllMaskBoundingBoxes;
         }
 
         if (typeof configuration.CSSImageFilter === 'string') {

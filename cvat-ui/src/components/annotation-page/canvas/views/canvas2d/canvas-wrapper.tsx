@@ -88,6 +88,7 @@ interface StateToProps {
     outlineColor: string;
     showBitmap: boolean;
     showProjections: boolean;
+    showAllMaskBoundingBoxes: boolean;
     grid: boolean;
     gridSize: number;
     gridColor: GridColor;
@@ -201,7 +202,15 @@ function mapStateToProps(state: CombinedState): StateToProps {
                 textContent,
             },
             shapes: {
-                opacity, colorBy, selectedOpacity, outlined, outlineColor, showBitmap, showProjections, showGroundTruth,
+                opacity,
+                colorBy,
+                selectedOpacity,
+                outlined,
+                outlineColor,
+                showBitmap,
+                showProjections,
+                showAllMaskBoundingBoxes,
+                showGroundTruth,
             },
             imageFilters,
         },
@@ -227,6 +236,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         outlineColor,
         showBitmap,
         showProjections,
+        showAllMaskBoundingBoxes,
         grid,
         gridSize,
         gridColor,
@@ -391,6 +401,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
             intelligentPolygonCrop,
             showObjectsTextAlways,
             showProjections,
+            showAllMaskBoundingBoxes,
             selectedOpacity,
             opacity,
             smoothImage,
@@ -418,6 +429,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
             autoborders: automaticBordering,
             adaptiveZoom,
             showProjections,
+            showAllMaskBoundingBoxes,
             showConflicts: showGroundTruth,
             intelligentPolygonCrop,
             selectedShapeOpacity: selectedOpacity,
@@ -468,6 +480,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
             adaptiveZoom,
             intelligentPolygonCrop,
             showProjections,
+            showAllMaskBoundingBoxes,
             colorBy,
             onFetchAnnotation,
             showGroundTruth,
@@ -482,6 +495,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
             prevProps.automaticBordering !== automaticBordering ||
             prevProps.adaptiveZoom !== adaptiveZoom ||
             prevProps.showProjections !== showProjections ||
+            prevProps.showAllMaskBoundingBoxes !== showAllMaskBoundingBoxes ||
             prevProps.intelligentPolygonCrop !== intelligentPolygonCrop ||
             prevProps.opacity !== opacity ||
             prevProps.selectedOpacity !== selectedOpacity ||
@@ -503,6 +517,7 @@ class CanvasWrapperComponent extends React.PureComponent<Props> {
                 autoborders: automaticBordering,
                 adaptiveZoom,
                 showProjections,
+                showAllMaskBoundingBoxes,
                 intelligentPolygonCrop,
                 selectedShapeOpacity: selectedOpacity,
                 shapeOpacity: opacity,

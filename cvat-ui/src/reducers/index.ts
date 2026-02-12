@@ -1012,6 +1012,7 @@ export interface ShapesSettingsState {
     outlineColor: string;
     showBitmap: boolean;
     showProjections: boolean;
+    showAllMaskBoundingBoxes: boolean;
     showGroundTruth: boolean;
     orientationVisibility: OrientationVisibility;
 }

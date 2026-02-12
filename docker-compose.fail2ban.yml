@@ -1,0 +1,21 @@
+services:
+  cvat_fail2ban:
+    image: crazymax/fail2ban:latest
+    container_name: cvat_fail2ban
+    restart: always
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      F2B_LOG_LEVEL: INFO
+      F2B_LOG_TARGET: STDOUT
+      TZ: UTC
+    volumes:
+      - ./components/security/fail2ban/filter.d:/data/filter.d:ro
+      - ./components/security/fail2ban/jail.d:/data/jail.d:ro
+      - ./logs/traefik:/var/log/traefik:ro
+      - cvat_fail2ban_db:/data/db
+
+volumes:
+  cvat_fail2ban_db:

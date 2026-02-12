@@ -265,8 +265,9 @@ services:
     container_name: traefik
     restart: always
     ports:
-      - 8080:8080
-      - 8090:8090
+      # Make host ports configurable to avoid collisions on shared hosts.
+      - ${TRAEFIK_WEB_PORT:-8080}:8080
+      - ${TRAEFIK_DASHBOARD_PORT:-8090}:8090
     environment:
       CVAT_HOST: ${CVAT_HOST:-localhost}
       DJANGO_LOG_VIEWER_HOST: grafana

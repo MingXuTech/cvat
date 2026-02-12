@@ -1,0 +1,11 @@
+[traefik-cvat-login]
+enabled = true
+filter = traefik-cvat-login
+logpath = /var/log/traefik/access.log
+maxretry = 5
+findtime = 10m
+bantime = 1h
+# Avoid locking out local admin access during host-side testing.
+ignoreip = 127.0.0.1/8 ::1 172.20.2.148
+port = 5826,5824
+banaction = iptables-multiport

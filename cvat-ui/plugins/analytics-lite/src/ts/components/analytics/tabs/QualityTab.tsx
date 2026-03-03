@@ -3,132 +3,46 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Card from 'antd/lib/card';
-import Empty from 'antd/lib/empty';
-import Tag from 'antd/lib/tag';
-import Select from 'antd/lib/select';
 import Space from 'antd/lib/space';
 import Spin from 'antd/lib/spin';
-import Table from 'antd/lib/table';
-import Text from 'antd/lib/typography/Text';
 import notification from 'antd/lib/notification';
-import { Request, getCore, Job } from 'cvat-core-wrapper';
-import { Line } from 'react-chartjs-2';
-import {
-    Chart as ChartJS,
-    CategoryScale,
-    LinearScale,
-    PointElement,
-    LineElement,
-    Tooltip,
-    Legend,
-} from 'chart.js';
+import { Request, getCore, Job, Task, JobType } from 'cvat-core-wrapper';
 
 import { AnalyticsLiteProps, ResourceKind } from '../types';
 import { fetchQualityReportData, isCvatError } from '../../../api';
-import { fmtNum, fmtRatio } from '../utils';
+import { asyncPool } from '../utils';
 import { jsonStyle } from '../styles';
+import TaskQualitySummary from 'components/analytics-report/task-quality-summary';
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
-
-function getJobId(r: any): number | null {
-    return r?.jobID ?? r?.jobId ?? r?.job_id ?? r?.operation?.job_id ?? null;
-}
-
-function getCreatedDateStr(r: any): string | null {
-    return r?.createdDate ?? r?.created_date ?? null;
-}
-
-function getCreatedMs(r: any): number {
-    const s = getCreatedDateStr(r);
-    if (!s) return 0;
-    const ms = Date.parse(s);
-    return Number.isNaN(ms) ? 0 : ms;
-}
-
-function getTargetLastUpdatedStr(r: any): string | null {
-    return r?.targetLastUpdated ?? r?.target_last_updated ?? null;
-}
-
-function getTargetLastUpdatedMs(r: any): number {
-    const s = getTargetLastUpdatedStr(r);
-    if (!s) return 0;
-    const ms = Date.parse(s);
-    return Number.isNaN(ms) ? 0 : ms;
-}
-
-function getJobUpdatedStr(job: any): string | null {
-    return job?.updatedDate ?? job?.updated_date ?? null;
-}
-
-function getJobUpdatedMs(job: any): number {
-    const s = getJobUpdatedStr(job);
-    if (!s) return 0;
-    const ms = Date.parse(s);
-    return Number.isNaN(ms) ? 0 : ms;
-}
-
-function getLatestReportStamp(list: any[]): { createdMs: number; id: number } {
-    if (!Array.isArray(list) || !list.length) {
-        return { createdMs: 0, id: 0 };
-    }
-    return list.reduce((acc, r) => {
-        const createdMs = getCreatedMs(r);
-        const id = typeof r?.id === 'number' ? r.id : 0;
-        if (createdMs > acc.createdMs) return { createdMs, id };
-        if (createdMs === acc.createdMs && id > acc.id) return { createdMs, id };
-        return acc;
-    }, { createdMs: 0, id: 0 });
-}
-
-function isNewerStamp(a: { createdMs: number; id: number }, b: { createdMs: number; id: number }): boolean {
-    if (a.createdMs > b.createdMs) return true;
-    if (a.createdMs < b.createdMs) return false;
-    return a.id > b.id;
-}
-
-function getErrorCount(s: any): number | null {
-    return s?.errorCount ?? s?.error_count ?? null;
-}
-
-function getTaskId(r: any): number | null {
-    return r?.taskID ?? r?.taskId ?? r?.task_id ?? r?.operation?.task_id ?? null;
-}
-
-function getFrameIdFromAny(r: any): number | null {
-    const v = r?.frame_id ?? r?.frameId ?? r?.frame ?? null;
-    if (typeof v === 'number' && Number.isFinite(v)) return v;
-    if (typeof v === 'string' && v.trim() && Number.isFinite(Number(v))) return Number(v);
-    return null;
-}
-
-function uniqNums(xs: number[]): number[] {
-    return Array.from(new Set(xs.filter((x) => typeof x === 'number' && Number.isFinite(x)))).sort((a, b) => a - b);
-}
-
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-        window.setTimeout(resolve, ms);
-    });
-}
-
-function parseDuplicateRequestMessage(message: string): {
-    action: string;
-    target: string;
-    targetId: number;
-    subresource?: string;
-} | null {
-    const match = message.match(/action=([^&]+)&target=([^&]+)&target_id=(\d+)(?:&subresource=([^&]+))?/);
-    if (!match) return null;
-    const [, action, target, targetIdStr, subresource] = match;
-    const targetId = Number(targetIdStr);
-    if (!action || !target || !Number.isFinite(targetId)) return null;
-    return {
-        action,
-        target,
-        targetId,
-        subresource: subresource || undefined,
-    };
-}
+import { buildOverlayShapes } from './quality-tab.overlay';
+import { ConflictAnnotationId, FrameGalleryState, GalleryItem, GalleryMode, JobRow, JobTotals, OverlayShape, TileOverlayState, TilePreview } from './quality-tab.types';
+import {
+    buildFrameImageUrl,
+    countObjectsForFrames,
+    filterFramesByRange,
+    getCreatedDateStr,
+    getCreatedMs,
+    getDsCount,
+    getGtCount,
+    getJobId,
+    getJobUpdatedMs,
+    getLatestReportStamp,
+    getTargetLastUpdatedMs,
+    getTotalCount,
+    getValidCount,
+    isNewerStamp,
+    listPositiveFramesForJob,
+    numOrZero,
+    parseDuplicateRequestMessage,
+    rangeFrames,
+    sleep,
+    toNumberArray,
+} from './quality-tab.utils';
+import TaskSummaryExtra from './quality-tab.task-summary-extra';
+import JobReportsCard from './quality-tab.job-reports-card';
+import ConflictsCard from './quality-tab.conflicts-card';
+import { FrameGalleryModal, FramePreviewModal } from './quality-tab.modals';
+import { getConflictFrameRowsFromConflicts } from './quality-tab.conflicts';
 
 export default function QualityTab(
     props: AnalyticsLiteProps & { kind: ResourceKind; debugEnabled: boolean },
@@ -143,8 +57,20 @@ export default function QualityTab(
     const [createRqId, setCreateRqId] = useState<string | null>(null);
     const [createRqStatus, setCreateRqStatus] = useState<any | null>(null);
     const [reports, setReports] = useState<any[]>([]);
-    const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
-    const [expandedJobReportId, setExpandedJobReportId] = useState<number | null>(null);
+    const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
+    const [jobRoleFilter, setJobRoleFilter] = useState<'all' | 'parent' | 'consensus'>('all');
+    const [conflictRoleFilter, setConflictRoleFilter] = useState<'all' | 'parent' | 'consensus'>('all');
+    const [dsPositiveByJobId, setDsPositiveByJobId] = useState<Record<number, number | null>>({});
+    const [gtPositiveByJobId, setGtPositiveByJobId] = useState<Record<number, number | null>>({});
+    const [dsObjectCountByJobId, setDsObjectCountByJobId] = useState<Record<number, number | null>>({});
+    const [gtObjectCountByJobId, setGtObjectCountByJobId] = useState<Record<number, number | null>>({});
+    const [dsPositiveLoading, setDsPositiveLoading] = useState(false);
+    const [gtPositiveLoading, setGtPositiveLoading] = useState(false);
+    const [gtJobs, setGtJobs] = useState<Job[]>([]);
+    const [tilePreview, setTilePreview] = useState<TilePreview | null>(null);
+    const [frameGallery, setFrameGallery] = useState<FrameGalleryState | null>(null);
+    const [tileOverlay, setTileOverlay] = useState<TileOverlayState>({ loading: false, dsShapes: [], gtShapes: [], error: null });
+    const [tileImageSize, setTileImageSize] = useState<{ w: number; h: number } | null>(null);
     // We don't show raw report data/conflicts blocks in UI anymore.
     // Conflicts are loaded lazily per job report for the "错误帧定位" table below.
     const [jobAssignees, setJobAssignees] = useState<Record<number, string | null>>({});
@@ -159,10 +85,6 @@ export default function QualityTab(
     const [conflictsByReportId, setConflictsByReportId] = useState<Record<number, any[] | null>>({});
     const [conflictsLoadingByReportId, setConflictsLoadingByReportId] = useState<Record<number, boolean>>({});
     const [conflictsErrorByReportId, setConflictsErrorByReportId] = useState<Record<number, string | null>>({});
-
-    const selectedReport = useMemo(() => (
-        reports.find((r: any) => r?.id === selectedReportId) || null
-    ), [reports, selectedReportId]);
 
     const getJobHistoryForJobId = (jid: number): any[] => {
         if (!jid) return [];
@@ -243,6 +165,84 @@ export default function QualityTab(
         });
     }, [reports, kind, resource]);
 
+    const jobRows = useMemo(() => {
+        if (kind !== 'task') {
+            return displayedJobReports.map((r: any) => {
+                const jid = getJobId(r);
+                const jobId = typeof jid === 'number' ? jid : r?.id ?? Math.random();
+                return ({
+                    key: `job-${jobId}`,
+                    jobId,
+                    parentJobId: null,
+                    role: 'single',
+                    depth: 0,
+                    jobType: null,
+                    job: null,
+                    report: r,
+                });
+            }) as JobRow[];
+        }
+
+        const task = resource as Task;
+        const jobs = task?.jobs || [];
+        const reportByJobId = new Map<number, any>();
+        displayedJobReports.forEach((r: any) => {
+            const jid = getJobId(r);
+            if (typeof jid === 'number') reportByJobId.set(jid, r);
+        });
+
+        const parents = jobs
+            .filter((job) => job.type === JobType.ANNOTATION)
+            .sort((a, b) => a.id - b.id);
+        const childrenByParent = new Map<number, Job[]>();
+        for (const job of jobs) {
+            if (job.type === JobType.CONSENSUS_REPLICA && typeof job.parentJobId === 'number') {
+                const list = childrenByParent.get(job.parentJobId) || [];
+                list.push(job);
+                childrenByParent.set(job.parentJobId, list);
+            }
+        }
+        for (const list of childrenByParent.values()) {
+            list.sort((a, b) => a.id - b.id);
+        }
+
+        const rows: JobRow[] = [];
+        for (const parent of parents) {
+            rows.push({
+                key: `job-${parent.id}`,
+                jobId: parent.id,
+                parentJobId: null,
+                role: parent.consensusReplicas > 0 ? 'parent' : 'single',
+                depth: 0,
+                jobType: parent.type,
+                job: parent,
+                report: reportByJobId.get(parent.id) || null,
+            });
+            const children = childrenByParent.get(parent.id) || [];
+            for (const child of children) {
+                rows.push({
+                    key: `job-${child.id}`,
+                    jobId: child.id,
+                    parentJobId: parent.id,
+                    role: 'consensus',
+                    depth: 1,
+                    jobType: child.type,
+                    job: child,
+                    report: reportByJobId.get(child.id) || null,
+                });
+            }
+        }
+
+        return rows;
+    }, [displayedJobReports, kind, resource]);
+
+    const gtJobsFromTask = useMemo(() => {
+        if (kind !== 'task') return [];
+        const task = resource as Task;
+        const jobs = task?.jobs || [];
+        return jobs.filter((job) => job.type === JobType.GROUND_TRUTH);
+    }, [kind, resource]);
+
     const displayedOtherReports = useMemo(() => (
         reports
             .filter((r: any) => r?.target !== 'job')
@@ -252,6 +252,380 @@ export default function QualityTab(
                 return (b.id || 0) - (a.id || 0);
             })
     ), [reports]);
+
+    const latestTaskReport = useMemo(() => {
+        const taskReports = reports.filter((r: any) => r?.target === 'task');
+        if (!taskReports.length) return null;
+        return taskReports.reduce((acc: any, r: any) => {
+            const accMs = getCreatedMs(acc);
+            const rMs = getCreatedMs(r);
+            if (rMs > accMs) return r;
+            if (rMs === accMs && (r.id || 0) > (acc.id || 0)) return r;
+            return acc;
+        }, taskReports[0]);
+    }, [reports]);
+
+    const parentJobSummary = useMemo(() => {
+        if (kind !== 'task') return null;
+        const rows = jobRows.filter((row) => row.role !== 'consensus' && row.report?.summary);
+        if (!rows.length) return null;
+
+        let valid = 0;
+        let ds = 0;
+        let gt = 0;
+        let total = 0;
+        for (const row of rows) {
+            const summary = row.report?.summary;
+            if (!summary) continue;
+            valid += getValidCount(summary);
+            ds += getDsCount(summary);
+            gt += getGtCount(summary);
+            total += getTotalCount(summary);
+        }
+
+        if (total <= 0 && (valid > 0 || ds > 0 || gt > 0)) {
+            total = Math.max(0, ds + gt - valid);
+        }
+
+        const precision = ds ? (valid / ds) : 0;
+        const recall = gt ? (valid / gt) : 0;
+        const accuracy = total ? (valid / total) : 0;
+        return {
+            validCount: valid,
+            dsCount: ds,
+            gtCount: gt,
+            totalCount: total,
+            precision,
+            recall,
+            accuracy,
+        };
+    }, [kind, jobRows]);
+
+    const [parentFrameCounts, setParentFrameCounts] = useState<{
+        tp: number;
+        fp: number;
+        fn: number;
+        tn: number;
+    } | null>(null);
+    const [parentFrameCountsLoading, setParentFrameCountsLoading] = useState(false);
+
+    useEffect(() => {
+        if (kind !== 'task') {
+            setParentFrameCounts(null);
+            setParentFrameCountsLoading(false);
+            return;
+        }
+
+        const reportIds = jobRows
+            .filter((row) => row.role !== 'consensus')
+            .map((row) => row.report?.id)
+            .filter((id) => typeof id === 'number' && Number.isFinite(id)) as number[];
+
+        if (!reportIds.length) {
+            setParentFrameCounts(null);
+            setParentFrameCountsLoading(false);
+            return;
+        }
+
+        let cancelled = false;
+        const load = async (): Promise<void> => {
+            setParentFrameCountsLoading(true);
+            setParentFrameCounts(null);
+            const org = core?.config?.organization?.organizationSlug;
+            const frameMap = new Map<number, {
+                valid: number;
+                extra: number;
+                missing: number;
+                ds: number;
+                gt: number;
+            }>();
+
+            for (const reportId of reportIds) {
+                try {
+                    const response = await core.server.request(`/api/quality/reports/${reportId}/data`, {
+                        params: {
+                            format: 'json',
+                            ...(org ? { org } : {}),
+                        },
+                    });
+                    let data = response?.data ?? response;
+                    if (typeof data === 'string') data = JSON.parse(data);
+                    const frameResults = data?.frame_results ?? data?.frameResults;
+                    if (!frameResults || typeof frameResults !== 'object') continue;
+
+                    for (const [frameKey, fr] of Object.entries(frameResults)) {
+                        const frameId = Number(frameKey);
+                        if (!Number.isFinite(frameId)) continue;
+                        const ann: any = (fr as any)?.annotations ?? {};
+                        const valid = numOrZero(ann.valid_count ?? ann.validCount);
+                        const extra = numOrZero(ann.extra_count ?? ann.extraCount);
+                        const missing = numOrZero(ann.missing_count ?? ann.missingCount);
+                        const ds = numOrZero(ann.ds_count ?? ann.dsCount);
+                        const gt = numOrZero(ann.gt_count ?? ann.gtCount);
+
+                        const current = frameMap.get(frameId) || {
+                            valid: 0,
+                            extra: 0,
+                            missing: 0,
+                            ds: 0,
+                            gt: 0,
+                        };
+                        current.valid += valid;
+                        current.extra += extra;
+                        current.missing += missing;
+                        current.ds += ds;
+                        current.gt += gt;
+                        frameMap.set(frameId, current);
+                    }
+                } catch {
+                    // ignore per-report failures
+                }
+            }
+
+            if (cancelled) return;
+
+            let tp = 0;
+            let fp = 0;
+            let fn = 0;
+            let tn = 0;
+            for (const fr of frameMap.values()) {
+                if (fr.valid > 0) tp += 1;
+                if (fr.extra > 0) fp += 1;
+                if (fr.missing > 0) fn += 1;
+                if (fr.ds === 0 && fr.gt === 0) tn += 1;
+            }
+
+            setParentFrameCounts({ tp, fp, fn, tn });
+            setParentFrameCountsLoading(false);
+        };
+
+        load();
+        return () => { cancelled = true; };
+    }, [kind, jobRows, core]);
+
+    const jobTotals = useMemo<JobTotals | null>(() => {
+        if (kind !== 'task') return null;
+        let dsObjectCount: number | null = 0;
+        let gtObjectCount: number | null = 0;
+        let dsObjectCountPending = 0;
+        let dsObjectCountFailed = 0;
+        let gtObjectCountPending = 0;
+        let gtObjectCountFailed = 0;
+        let missingReports = 0;
+        let jobsCount = 0;
+        let dsPositiveImages = 0;
+        let dsPositivePending = 0;
+        let dsPositiveFailed = 0;
+        let gtPositiveImages = 0;
+        let gtPositivePending = 0;
+        let gtPositiveFailed = 0;
+        let dsTotalImages: number | null = 0;
+        let gtValidationImages: number | null = 0;
+        const taskLayout = taskLayouts[resource.id] || null;
+        const taskValidationFrames = toNumberArray(
+            taskLayout?.validationFrames ?? taskLayout?.validation_frames ?? [],
+        );
+        const taskMode = taskLayout?.mode ?? null;
+
+        for (const row of jobRows) {
+            if (row.role === 'consensus') continue;
+            jobsCount += 1;
+
+            const summary = row.report?.summary;
+            if (!summary) missingReports += 1;
+
+            if (typeof row.jobId === 'number') {
+                if (row.jobId in dsObjectCountByJobId) {
+                    const value = dsObjectCountByJobId[row.jobId];
+                    if (typeof value === 'number') dsObjectCount = (dsObjectCount ?? 0) + value;
+                    else dsObjectCountFailed += 1;
+                } else {
+                    dsObjectCountPending += 1;
+                }
+
+                if (row.jobId in dsPositiveByJobId) {
+                    const value = dsPositiveByJobId[row.jobId];
+                    if (typeof value === 'number') dsPositiveImages += value;
+                    else dsPositiveFailed += 1;
+                } else {
+                    dsPositivePending += 1;
+                }
+
+                const job = row.job;
+                if (job && Number.isInteger(job.startFrame) && Number.isInteger(job.stopFrame)) {
+                    const span = job.stopFrame - job.startFrame + 1;
+                    if (Number.isFinite(span) && span > 0) {
+                        if (taskValidationFrames.length) {
+                            const validationInRange = filterFramesByRange(
+                                taskValidationFrames,
+                                job.startFrame,
+                                job.stopFrame,
+                            ).length;
+                            dsTotalImages = (dsTotalImages ?? 0) + Math.max(0, span - validationInRange);
+                        } else {
+                            dsTotalImages = (dsTotalImages ?? 0) + span;
+                        }
+                    } else {
+                        dsTotalImages = null;
+                    }
+                }
+            }
+        }
+
+        if (dsObjectCountPending > 0 || dsObjectCountFailed > 0) {
+            dsObjectCount = null;
+        }
+
+        for (const job of gtJobs) {
+            const jid = job?.id;
+            if (typeof jid !== 'number') continue;
+            if (jid in gtObjectCountByJobId) {
+                const value = gtObjectCountByJobId[jid];
+                if (typeof value === 'number') gtObjectCount = (gtObjectCount ?? 0) + value;
+                else gtObjectCountFailed += 1;
+            } else {
+                gtObjectCountPending += 1;
+            }
+
+            if (jid in gtPositiveByJobId) {
+                const value = gtPositiveByJobId[jid];
+                if (typeof value === 'number') gtPositiveImages += value;
+                else gtPositiveFailed += 1;
+            } else {
+                gtPositivePending += 1;
+            }
+
+            if (Number.isInteger(job.startFrame) && Number.isInteger(job.stopFrame)) {
+                if (taskValidationFrames.length) {
+                    gtValidationImages = (gtValidationImages ?? 0) + filterFramesByRange(taskValidationFrames, job.startFrame, job.stopFrame).length;
+                } else {
+                    gtValidationImages = null;
+                }
+            }
+        }
+
+        if (gtObjectCountPending > 0 || gtObjectCountFailed > 0) {
+            gtObjectCount = null;
+        }
+
+        const dsNegativeImages = (dsTotalImages !== null && dsPositivePending === 0 && dsPositiveFailed === 0) ?
+            Math.max(0, dsTotalImages - dsPositiveImages) : null;
+        const gtNegativeImages = (gtValidationImages !== null && gtPositivePending === 0 && gtPositiveFailed === 0) ?
+            Math.max(0, gtValidationImages - gtPositiveImages) : null;
+
+        return {
+            dsObjectCount,
+            gtObjectCount,
+            dsObjectCountPending,
+            dsObjectCountFailed,
+            gtObjectCountPending,
+            gtObjectCountFailed,
+            missingReports,
+            jobsCount,
+            dsPositiveImages,
+            dsPositivePending,
+            dsPositiveFailed,
+            gtPositiveImages,
+            gtPositivePending,
+            gtPositiveFailed,
+            dsTotalImages,
+            gtValidationImages,
+            dsNegativeImages,
+            gtNegativeImages,
+        };
+    }, [
+        kind,
+        jobRows,
+        dsPositiveByJobId,
+        dsObjectCountByJobId,
+        gtJobs,
+        gtPositiveByJobId,
+        gtObjectCountByJobId,
+        taskLayouts,
+        jobLayouts,
+        resource.id,
+    ]);
+
+    const jobMetaById = useMemo(() => {
+        const map = new Map<number, { role: JobRow['role']; job: Job | null; parentJobId: number | null }>();
+        for (const row of jobRows) {
+            if (typeof row.jobId === 'number') {
+                map.set(row.jobId, { role: row.role, job: row.job, parentJobId: row.parentJobId });
+            }
+        }
+        return map;
+    }, [jobRows]);
+
+    const gtImageCountByJobId = useMemo(() => {
+        const map = new Map<number, number | null>();
+        if (kind !== 'task') return map;
+        const taskId = resource.id;
+        const taskLayout = taskLayouts[taskId] || null;
+        if (!taskLayout) return map;
+        const mode = taskLayout?.mode ?? null;
+        const validationFrames = toNumberArray(
+            taskLayout?.validationFrames ?? taskLayout?.validation_frames ?? [],
+        );
+
+        for (const [jobId, meta] of jobMetaById.entries()) {
+            const job = meta?.job;
+            if (!job || !Number.isInteger(job.startFrame) || !Number.isInteger(job.stopFrame)) {
+                map.set(jobId, null);
+                continue;
+            }
+
+            if (mode === 'gt_pool') {
+                const jl = jobLayouts[jobId] || null;
+                if (!jl) {
+                    map.set(jobId, null);
+                    continue;
+                }
+                const hpFrames = toNumberArray(jl?.honeypotFrames ?? jl?.honeypot_frames ?? []);
+                const hpRealFrames = toNumberArray(jl?.honeypotRealFrames ?? jl?.honeypot_real_frames ?? []);
+                const frames = hpFrames.length ? hpFrames : hpRealFrames;
+                map.set(jobId, frames.length);
+                continue;
+            }
+
+            if (!validationFrames.length) {
+                map.set(jobId, 0);
+                continue;
+            }
+
+            map.set(jobId, filterFramesByRange(validationFrames, job.startFrame, job.stopFrame).length);
+        }
+
+        return map;
+    }, [kind, resource.id, taskLayouts, jobLayouts, jobMetaById]);
+
+    const filteredJobRows = useMemo(() => {
+        if (jobRoleFilter === 'all') return jobRows;
+        return jobRows.filter((r) => r.role === jobRoleFilter);
+    }, [jobRows, jobRoleFilter]);
+
+    const jobRowsStats = useMemo(() => {
+        const consensusCount = jobRows.filter((r) => r.role === 'consensus').length;
+        const parentCount = jobRows.length - consensusCount;
+        return { parentCount, consensusCount };
+    }, [jobRows]);
+
+    const hasJobRows = kind === 'task' ? filteredJobRows.length > 0 : displayedJobReports.length > 0;
+
+    const conflictJobReports = useMemo(() => {
+        if (kind !== 'task') return displayedJobReports;
+        if (conflictRoleFilter === 'all') return displayedJobReports;
+        return displayedJobReports.filter((r: any) => {
+            const jid = getJobId(r);
+            if (typeof jid !== 'number') return false;
+            const meta = jobMetaById.get(jid);
+            return meta?.role === conflictRoleFilter;
+        });
+    }, [displayedJobReports, kind, conflictRoleFilter, jobMetaById]);
+
+    const requiredDsPositiveJobs = useMemo(() => {
+        if (kind !== 'task') return [];
+        return jobRows.filter((row) => row.role !== 'consensus' && row.job);
+    }, [kind, jobRows]);
 
     const ensureValidationContext = async (dsJobId: number, preferredTaskId: number | null): Promise<number | null> => {
         setValidationByJobError((prev) => ({ ...prev, [dsJobId]: null }));
@@ -323,52 +697,327 @@ export default function QualityTab(
         }
     };
 
-    const getConflictFrameRowsFromConflicts = (list: any[] | null): any[] => {
-        if (!Array.isArray(list) || !list.length) return [];
-        const byFrame = new Map<number, { frame: number; types: Set<string>; severities: Set<string>; count: number }>();
-
-        for (const c of list) {
-            const frame = getFrameIdFromAny(c);
-            if (frame === null) continue;
-            const row = byFrame.get(frame) || {
-                frame,
-                types: new Set<string>(),
-                severities: new Set<string>(),
-                count: 0,
-            };
-            if (typeof c?.type === 'string' && c.type) row.types.add(c.type);
-            if (typeof c?.severity === 'string' && c.severity) row.severities.add(c.severity);
-            row.count += 1;
-            byFrame.set(frame, row);
+    const ensureTaskLayout = async (taskId: number): Promise<any | null> => {
+        if (taskId in taskLayouts) return taskLayouts[taskId] ?? null;
+        try {
+            const [task] = await core.tasks.get({ id: taskId });
+            const layout = await (task as any)?.validationLayout?.();
+            setTaskLayouts((prev) => ({ ...prev, [taskId]: layout ?? null }));
+            return layout ?? null;
+        } catch {
+            setTaskLayouts((prev) => ({ ...prev, [taskId]: prev[taskId] ?? null }));
+            return taskLayouts[taskId] ?? null;
         }
+    };
 
-        const rows = Array.from(byFrame.values()).map((r) => ({
-            frame: r.frame,
-            count: r.count,
-            types: Array.from(r.types).sort(),
-            severities: Array.from(r.severities).sort(),
-        }));
-        rows.sort((a, b) => {
-            const aErr = a.severities.includes('error') ? 1 : 0;
-            const bErr = b.severities.includes('error') ? 1 : 0;
-            if (aErr !== bErr) return bErr - aErr;
-            return a.frame - b.frame;
-        });
-        return rows;
+    const ensureJobLayout = async (jobId: number, job?: Job | null): Promise<any | null> => {
+        if (jobId in jobLayouts) return jobLayouts[jobId] ?? null;
+        try {
+            let target = job || null;
+            if (!target) {
+                const [fetched] = await core.jobs.get({ jobID: jobId });
+                target = fetched || null;
+            }
+            const layout = await (target as any)?.validationLayout?.();
+            setJobLayouts((prev) => ({ ...prev, [jobId]: layout ?? null }));
+            return layout ?? null;
+        } catch {
+            setJobLayouts((prev) => ({ ...prev, [jobId]: prev[jobId] ?? null }));
+            return jobLayouts[jobId] ?? null;
+        }
+    };
+
+    const openFrameGallery = async (mode: GalleryMode): Promise<void> => {
+        if (kind !== 'task') return;
+        const taskId = resource.id;
+        const titleMap: Record<GalleryMode, string> = {
+            tp: 'TP 图片（正确）',
+            fp: 'FP 图片（多标）',
+            fn: 'FN 图片（漏标）',
+            ds_pos: 'DS 正样本图片 (非验证帧 DS>0)',
+            ds_neg: 'DS 负样本图片 (非验证帧 DS=0)',
+            ds_all: 'DS 全部样本图片 (非验证帧)',
+            gt_pos: 'GT 正样本图片 (GT>0)',
+            gt_neg: 'GT 负样本图片 (GT=0)',
+            gt_all: 'GT 全部样本图片',
+        };
+        const title = titleMap[mode];
+        setFrameGallery({ title, items: [], loading: true, error: null });
+
+        const orgSlug = core?.config?.organization?.organizationSlug ?? null;
+        const items: GalleryItem[] = [];
+        let errorMsg: string | null = null;
+
+        try {
+            if (mode === 'tp') {
+                const parentRows = jobRows.filter((r) => r.role !== 'consensus' && r.report && typeof r.jobId === 'number');
+                const gtJobId = gtJobs.length ? gtJobs[0].id : null;
+                const taskLayout = await ensureTaskLayout(taskId);
+                const taskMode = taskLayout?.mode ?? null;
+
+                for (const row of parentRows) {
+                    const reportId = row.report?.id;
+                    if (typeof reportId !== 'number') continue;
+                    try {
+                        const response = await core.server.request(`/api/quality/reports/${reportId}/data`, {
+                            params: { format: 'json', ...(orgSlug ? { org: orgSlug } : {}) },
+                        });
+                        let data = response?.data ?? response;
+                        if (typeof data === 'string') data = JSON.parse(data);
+                        const frameResults = data?.frame_results ?? data?.frameResults;
+                        if (!frameResults || typeof frameResults !== 'object') continue;
+
+                        for (const [frameKey, fr] of Object.entries(frameResults)) {
+                            const frame = Number(frameKey);
+                            if (!Number.isFinite(frame)) continue;
+                            const ann: any = (fr as any)?.annotations ?? {};
+                            const valid = numOrZero(ann.valid_count ?? ann.validCount);
+                            if (valid <= 0) continue;
+
+                            let gtFrame: number | null = null;
+                            if (taskMode === 'gt') {
+                                gtFrame = frame;
+                            } else if (taskMode === 'gt_pool') {
+                                const jl = await ensureJobLayout(row.jobId, row.job);
+                                const hpFrames = toNumberArray(jl?.honeypotFrames ?? jl?.honeypot_frames ?? []);
+                                const hpRealFrames = toNumberArray(jl?.honeypotRealFrames ?? jl?.honeypot_real_frames ?? []);
+                                const hpMap = new Map<number, number>();
+                                if (hpFrames.length && hpRealFrames.length) {
+                                    for (let i = 0; i < hpFrames.length; i++) {
+                                        hpMap.set(hpFrames[i], hpRealFrames[i]);
+                                    }
+                                }
+                                gtFrame = hpMap.get(frame) ?? null;
+                            }
+
+                            const gtLink = (gtJobId && gtFrame !== null) ?
+                                `/tasks/${taskId}/jobs/${gtJobId}?frame=${gtFrame}` : null;
+                            items.push({
+                                key: `tp-${row.jobId}-${frame}`,
+                                jobId: row.jobId,
+                                frame,
+                                tags: ['TP'],
+                                severity: null,
+                                preview: buildFrameImageUrl(row.jobId, frame, orgSlug),
+                                dsLink: `/tasks/${taskId}/jobs/${row.jobId}?frame=${frame}`,
+                                gtLink,
+                                role: 'ds',
+                                overlayMode: 'all',
+                                dsJobId: row.jobId,
+                                gtJobId,
+                                dsFrame: frame,
+                                gtFrame,
+                                dsAnnotationIds: [],
+                                gtAnnotationIds: [],
+                            });
+                        }
+                    } catch {
+                        errorMsg = errorMsg || `无法加载 report ${reportId} 的 TP 帧`;
+                    }
+                }
+            } else if (mode === 'fp' || mode === 'fn') {
+                const conflictType = mode === 'fp' ? 'extra_annotation' : 'missing_annotation';
+                const parentRows = jobRows.filter((r) => r.role !== 'consensus' && r.report && typeof r.jobId === 'number');
+                for (const row of parentRows) {
+                    const reportId = row.report?.id;
+                    if (typeof reportId !== 'number') continue;
+                    let list = conflictsByReportId[reportId] ?? null;
+                    if (!Array.isArray(list)) {
+                        try {
+                            const fetched = await core.analytics.quality.conflicts({ reportID: reportId });
+                            list = Array.from(fetched as any[]);
+                            setConflictsByReportId((prev) => ({ ...prev, [reportId]: list }));
+                        } catch {
+                            errorMsg = errorMsg || `无法加载 report ${reportId} 的 conflicts`;
+                            continue;
+                        }
+                    }
+
+                    const rows = getConflictFrameRowsFromConflicts(list);
+                    let gtJobIdFromAnnotations: number | null = null;
+                    const filtered = rows.filter((r: any) => (r.types || []).includes(conflictType));
+                    for (const r of filtered) {
+                        const frame = r.frame;
+                        const annotationIds = Array.isArray(r.annotationIds) ? (r.annotationIds as ConflictAnnotationId[]) : [];
+                        const dsAnnoIds = annotationIds
+                            .filter((a) => a.jobId === row.jobId)
+                            .map((a) => a.objId);
+                        if (gtJobIdFromAnnotations === null) {
+                            const other = annotationIds.find((a) => a.jobId !== row.jobId);
+                            gtJobIdFromAnnotations = other?.jobId ?? null;
+                        }
+                        const gtAnnoIds = gtJobIdFromAnnotations ?
+                            annotationIds.filter((a) => a.jobId === gtJobIdFromAnnotations).map((a) => a.objId) : [];
+                        const severity = (r.severities || []).includes('error') ? 'error' :
+                            ((r.severities || []).includes('warning') ? 'warning' : null);
+                        const tags = Array.from(new Set(
+                            ([] as string[]).concat(
+                                [mode.toUpperCase()],
+                                r.severities || [],
+                                r.types || [],
+                            ),
+                        ));
+                        const taskLayout = await ensureTaskLayout(taskId);
+                        const taskMode = taskLayout?.mode ?? null;
+                        let gtFrame: number | null = null;
+                        if (taskMode === 'gt') {
+                            gtFrame = frame;
+                        } else if (taskMode === 'gt_pool') {
+                            const jl = await ensureJobLayout(row.jobId, row.job);
+                            const hpFrames = toNumberArray(jl?.honeypotFrames ?? jl?.honeypot_frames ?? []);
+                            const hpRealFrames = toNumberArray(jl?.honeypotRealFrames ?? jl?.honeypot_real_frames ?? []);
+                            const hpMap = new Map<number, number>();
+                            if (hpFrames.length && hpRealFrames.length) {
+                                for (let i = 0; i < hpFrames.length; i++) {
+                                    hpMap.set(hpFrames[i], hpRealFrames[i]);
+                                }
+                            }
+                            gtFrame = hpMap.get(frame) ?? null;
+                        }
+                        const gtLink = (gtJobIdFromAnnotations && gtFrame !== null) ?
+                            `/tasks/${taskId}/jobs/${gtJobIdFromAnnotations}?frame=${gtFrame}` : null;
+                        items.push({
+                            key: `conflict-${row.jobId}-${frame}-${conflictType}`,
+                            jobId: row.jobId,
+                            frame,
+                            tags,
+                            severity,
+                            errorCount: row.errorCount,
+                            warningCount: row.warningCount,
+                            preview: buildFrameImageUrl(row.jobId, frame, orgSlug),
+                            dsLink: `/tasks/${taskId}/jobs/${row.jobId}?frame=${frame}`,
+                            gtLink,
+                            role: 'ds',
+                            overlayMode: 'conflict',
+                            dsJobId: row.jobId,
+                            gtJobId: gtJobIdFromAnnotations,
+                            dsFrame: frame,
+                            gtFrame,
+                            dsAnnotationIds: dsAnnoIds,
+                            gtAnnotationIds: gtAnnoIds,
+                        });
+                    }
+                }
+            } else {
+                const isDs = mode.startsWith('ds_');
+                const positive = mode.endsWith('_pos');
+                const negative = mode.endsWith('_neg');
+                const isAll = mode.endsWith('_all');
+                const taskLayout = await ensureTaskLayout(taskId);
+                const taskValidationFrames = toNumberArray(
+                    taskLayout?.validationFrames ?? taskLayout?.validation_frames ?? [],
+                );
+                const taskMode = taskLayout?.mode ?? null;
+
+                const needsValidationFrames = !(isDs && (positive || negative || isAll));
+                if (needsValidationFrames && !taskValidationFrames.length && taskMode !== 'gt_pool') {
+                    throw new Error('未找到 validation frames，无法生成正负样本图片列表');
+                }
+
+                const jobList: { jobId: number; job: Job }[] = [];
+                if (isDs) {
+                    for (const row of jobRows) {
+                        if (row.role === 'consensus' || !row.job || typeof row.jobId !== 'number') continue;
+                        jobList.push({ jobId: row.jobId, job: row.job });
+                    }
+                } else {
+                    for (const job of gtJobs) {
+                        if (typeof job?.id === 'number') {
+                            jobList.push({ jobId: job.id, job });
+                        }
+                    }
+                }
+
+                for (const entry of jobList) {
+                    const job = entry.job;
+                    let validationFrames = taskValidationFrames;
+                    const useValidationFrames = !(isDs && (positive || negative || isAll));
+                    if (isDs && taskMode === 'gt_pool') {
+                        const jl = await ensureJobLayout(entry.jobId, job);
+                        const hpFrames = toNumberArray(jl?.honeypotFrames ?? jl?.honeypot_frames ?? []);
+                        if (hpFrames.length) validationFrames = hpFrames;
+                    }
+
+                    if (useValidationFrames && !validationFrames.length) continue;
+                    let framesInRange: number[] = [];
+                    if (useValidationFrames) {
+                        framesInRange = filterFramesByRange(validationFrames, job.startFrame, job.stopFrame);
+                    } else if (validationFrames.length) {
+                        const validationSet = new Set(validationFrames);
+                        framesInRange = rangeFrames(job.startFrame, job.stopFrame)
+                            .filter((f) => !validationSet.has(f));
+                    } else {
+                        framesInRange = rangeFrames(job.startFrame, job.stopFrame);
+                    }
+                    if (!framesInRange.length) continue;
+
+                    let positiveFrames: number[] = [];
+                    if (!isAll) {
+                        const validationSet = new Set(framesInRange);
+                        const result = await listPositiveFramesForJob(job, validationSet);
+                        if (result === null) {
+                            errorMsg = errorMsg || `无法读取 job ${entry.jobId} 的标注`;
+                            continue;
+                        }
+                        positiveFrames = result;
+                    }
+
+                    const positiveSet = new Set(positiveFrames);
+                    const targetFrames = isAll ? framesInRange :
+                        (positive ? positiveFrames : (negative ? framesInRange.filter((f) => !positiveSet.has(f)) : framesInRange));
+
+                    const tag = isDs ? (isAll ? 'DS' : (positive ? 'DS+' : 'DS-')) :
+                        (isAll ? 'GT' : (positive ? 'GT+' : 'GT-'));
+                    for (const frame of targetFrames) {
+                        items.push({
+                            key: `${tag}-${entry.jobId}-${frame}`,
+                            jobId: entry.jobId,
+                            frame,
+                            tags: [tag],
+                            severity: null,
+                            preview: buildFrameImageUrl(entry.jobId, frame, orgSlug),
+                            dsLink: isDs ? `/tasks/${taskId}/jobs/${entry.jobId}?frame=${frame}` : null,
+                            gtLink: !isDs ? `/tasks/${taskId}/jobs/${entry.jobId}?frame=${frame}` : null,
+                            role: isDs ? 'ds' : 'gt',
+                            overlayMode: 'all',
+                            dsJobId: isDs ? entry.jobId : null,
+                            gtJobId: !isDs ? entry.jobId : null,
+                            dsFrame: isDs ? frame : null,
+                            gtFrame: !isDs ? frame : null,
+                            dsAnnotationIds: [],
+                            gtAnnotationIds: [],
+                        });
+                    }
+                }
+            }
+
+            items.sort((a, b) => (a.frame - b.frame) || (a.jobId - b.jobId));
+            setFrameGallery({ title, items, loading: false, error: errorMsg });
+        } catch (err: unknown) {
+            setFrameGallery({
+                title,
+                items: [],
+                loading: false,
+                error: err instanceof Error ? err.message : '无法生成图片列表',
+            });
+        }
     };
 
     const loadReports = async (): Promise<any[]> => {
         setQualityError(null);
         setQualityLoading(true);
         setQualityDebug(null);
-        setReports([]);
-            setSelectedReportId(null);
-            setExpandedJobReportId(null);
+            setReports([]);
+            setExpandedJobId(null);
         setCreateRqStatus(null);
         setJobAssignees({});
         setConflictsByReportId({});
         setConflictsLoadingByReportId({});
         setConflictsErrorByReportId({});
+        setDsPositiveByJobId({});
+        setDsPositiveLoading(false);
+        setGtPositiveByJobId({});
+        setGtPositiveLoading(false);
 
         try {
             const filter: any = {};
@@ -392,16 +1041,6 @@ export default function QualityTab(
                 return (b.id || 0) - (a.id || 0);
             });
             setReports(asArray);
-            if (asArray.length) {
-                let preferred: any | null = null;
-                if (kind === 'job') {
-                    preferred = asArray.find((r: any) => r?.target === 'job' && getJobId(r) === resource.id) || null;
-                }
-                if (!preferred) {
-                    preferred = asArray.find((r: any) => r?.target === 'job') || null;
-                }
-                setSelectedReportId((preferred || asArray[0]).id);
-            }
 
             if (debugEnabled) {
                 setQualityDebug({
@@ -606,14 +1245,248 @@ export default function QualityTab(
     }, [core, displayedJobReports]);
 
     useEffect(() => {
+        if (!tilePreview) {
+            setTileOverlay({ loading: false, dsShapes: [], gtShapes: [], error: null });
+            setTileImageSize(null);
+            return;
+        }
+
+        const {
+            dsJobId,
+            gtJobId,
+            dsFrame,
+            gtFrame,
+            dsAnnotationIds,
+            gtAnnotationIds,
+            overlayMode,
+        } = tilePreview;
+
+        setTileImageSize(null);
+
+        const dsAnnoIdSet = new Set(
+            (dsAnnotationIds || []).filter((v) => typeof v === 'number' && Number.isFinite(v)),
+        );
+        const gtAnnoIdSet = new Set(
+            (gtAnnotationIds || []).filter((v) => typeof v === 'number' && Number.isFinite(v)),
+        );
+        const useAll = overlayMode === 'all';
+        if (!useAll && !dsAnnoIdSet.size && !gtAnnoIdSet.size) {
+            setTileOverlay({ loading: false, dsShapes: [], gtShapes: [], error: null });
+            return;
+        }
+
+        let cancelled = false;
+        const load = async (): Promise<void> => {
+            setTileOverlay({ loading: true, dsShapes: [], gtShapes: [], error: null });
+            try {
+                let dsShapes: OverlayShape[] = [];
+                let gtShapes: OverlayShape[] = [];
+
+                if (typeof dsJobId === 'number' && typeof dsFrame === 'number' && (useAll || dsAnnoIdSet.size)) {
+                    let job = jobMetaById.get(dsJobId)?.job || null;
+                    if (!job) {
+                        const [fetched] = await core.jobs.get({ jobID: dsJobId });
+                        job = fetched || null;
+                    }
+                    if (job) {
+                        const states = await job.annotations.get(dsFrame, false, []);
+                        dsShapes = buildOverlayShapes(states, useAll ? null : dsAnnoIdSet);
+                    }
+                }
+
+                if (typeof gtJobId === 'number' && typeof gtFrame === 'number' && (useAll || gtAnnoIdSet.size)) {
+                    let job = jobMetaById.get(gtJobId)?.job || null;
+                    if (!job) {
+                        const [fetched] = await core.jobs.get({ jobID: gtJobId });
+                        job = fetched || null;
+                    }
+                    if (job) {
+                        const states = await job.annotations.get(gtFrame, false, []);
+                        gtShapes = buildOverlayShapes(states, useAll ? null : gtAnnoIdSet);
+                    }
+                }
+
+                if (!cancelled) setTileOverlay({ loading: false, dsShapes, gtShapes, error: null });
+            } catch (err: unknown) {
+                if (!cancelled) {
+                    setTileOverlay({
+                        loading: false,
+                        dsShapes: [],
+                        gtShapes: [],
+                        error: err instanceof Error ? err.message : '无法加载标注',
+                    });
+                }
+            }
+        };
+
+        load();
+        return () => { cancelled = true; };
+    }, [tilePreview, jobMetaById, core]);
+
+    useEffect(() => {
         loadReports();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [resource.id, kind]);
 
     useEffect(() => {
         if (kind !== 'task') return;
-        if (!displayedJobReports.length) return;
-        const reportIds = displayedJobReports
+        let cancelled = false;
+        const prefetchLayouts = async (): Promise<void> => {
+            const taskId = resource.id;
+            const layout = await ensureTaskLayout(taskId);
+            if (cancelled) return;
+            if (layout?.mode !== 'gt_pool') return;
+            for (const row of jobRows) {
+                if (row.role === 'consensus' || typeof row.jobId !== 'number') continue;
+                await ensureJobLayout(row.jobId, row.job);
+                if (cancelled) return;
+            }
+        };
+        prefetchLayouts();
+        return () => { cancelled = true; };
+    }, [kind, resource.id, jobRows]);
+
+    useEffect(() => {
+        if (kind !== 'task') {
+            setGtJobs([]);
+            return;
+        }
+
+        if (gtJobsFromTask.length) {
+            setGtJobs(gtJobsFromTask);
+            return;
+        }
+
+        let cancelled = false;
+        const loadGtJobs = async (): Promise<void> => {
+            try {
+                const list = await core.jobs.get({ taskID: resource.id }, true);
+                const jobs = (Array.isArray(list) ? list : Array.from(list as any[])) as Job[];
+                const gt = jobs.filter((job) => {
+                    if (job?.type === JobType.GROUND_TRUTH) return true;
+                    const t = String((job as any)?.type ?? '').toLowerCase();
+                    return t === 'ground_truth';
+                });
+                if (!cancelled) setGtJobs(gt);
+            } catch {
+                if (!cancelled) setGtJobs([]);
+            }
+        };
+
+        loadGtJobs();
+        return () => { cancelled = true; };
+    }, [kind, resource.id, gtJobsFromTask, core]);
+
+    useEffect(() => {
+        if (kind !== 'task') return;
+        let cancelled = false;
+        const missing = requiredDsPositiveJobs.filter((row) => !(row.jobId in dsPositiveByJobId));
+        if (!missing.length) return;
+
+        const load = async (): Promise<void> => {
+            setDsPositiveLoading(true);
+            try {
+                const taskLayout = await ensureTaskLayout(resource.id);
+                const validationFrames = toNumberArray(
+                    taskLayout?.validationFrames ?? taskLayout?.validation_frames ?? [],
+                );
+                const validationSet = new Set(validationFrames);
+                const results = await asyncPool(1, missing, async (row) => {
+                    const job = row.job as Job;
+                    const nonValidationSet = validationFrames.length ?
+                        new Set(
+                            rangeFrames(job.startFrame, job.stopFrame)
+                                .filter((f) => !validationSet.has(f)),
+                        ) :
+                        undefined;
+                    const frames = await listPositiveFramesForJob(job, nonValidationSet);
+                    if (frames === null) {
+                        return { jobId: row.jobId, count: null, objectCount: null };
+                    }
+                    const objectCount = await countObjectsForFrames(job, frames);
+                    return { jobId: row.jobId, count: frames.length, objectCount };
+                });
+
+                if (cancelled) return;
+                setDsPositiveByJobId((prev) => {
+                    const next = { ...prev };
+                    for (const r of results) {
+                        next[r.jobId] = r.count;
+                    }
+                    return next;
+                });
+                setDsObjectCountByJobId((prev) => {
+                    const next = { ...prev };
+                    for (const r of results) {
+                        next[r.jobId] = r.objectCount;
+                    }
+                    return next;
+                });
+            } finally {
+                if (!cancelled) setDsPositiveLoading(false);
+            }
+        };
+
+        load();
+        return () => { cancelled = true; };
+    }, [kind, requiredDsPositiveJobs, dsPositiveByJobId, resource.id]);
+
+    useEffect(() => {
+        if (kind !== 'task') return;
+        let cancelled = false;
+        const missing = gtJobs.filter((job) => typeof job?.id === 'number' && !(job.id in gtPositiveByJobId));
+        if (!missing.length) return;
+
+        const load = async (): Promise<void> => {
+            setGtPositiveLoading(true);
+            try {
+                const taskId = resource.id;
+                const taskLayout = await ensureTaskLayout(taskId);
+                const taskValidationFrames = toNumberArray(
+                    taskLayout?.validationFrames ?? taskLayout?.validation_frames ?? [],
+                );
+                const results = await asyncPool(1, missing, async (job) => {
+                    if (!taskValidationFrames.length) {
+                        return { jobId: job.id, count: null, objectCount: null };
+                    }
+                    const framesInRange = filterFramesByRange(taskValidationFrames, job.startFrame, job.stopFrame);
+                    const validationSet = new Set(framesInRange);
+                    const frames = await listPositiveFramesForJob(job, validationSet);
+                    if (frames === null) {
+                        return { jobId: job.id, count: null, objectCount: null };
+                    }
+                    const objectCount = await countObjectsForFrames(job, frames);
+                    return { jobId: job.id, count: frames.length, objectCount };
+                });
+
+                if (cancelled) return;
+                setGtPositiveByJobId((prev) => {
+                    const next = { ...prev };
+                    for (const r of results) {
+                        next[r.jobId] = r.count;
+                    }
+                    return next;
+                });
+                setGtObjectCountByJobId((prev) => {
+                    const next = { ...prev };
+                    for (const r of results) {
+                        next[r.jobId] = r.objectCount;
+                    }
+                    return next;
+                });
+            } finally {
+                if (!cancelled) setGtPositiveLoading(false);
+            }
+        };
+
+        load();
+        return () => { cancelled = true; };
+    }, [kind, gtJobs, gtPositiveByJobId]);
+
+    useEffect(() => {
+        if (kind !== 'task') return;
+        if (!conflictJobReports.length) return;
+        const reportIds = conflictJobReports
             .map((r: any) => r?.id)
             .filter((id: any) => typeof id === 'number' && Number.isFinite(id)) as number[];
         if (!reportIds.length) return;
@@ -621,10 +1494,34 @@ export default function QualityTab(
             loadConflictsForReport(id);
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [kind, displayedJobReports]);
+    }, [kind, conflictJobReports]);
+
+    const taskSummaryExtra = (kind === 'task' && jobTotals) ? (
+        <TaskSummaryExtra
+            jobTotals={jobTotals}
+            gtJobsCount={gtJobs.length}
+            dsPositiveLoading={dsPositiveLoading}
+            gtPositiveLoading={gtPositiveLoading}
+            onOpenGallery={openFrameGallery}
+        />
+    ) : null;
 
     return (
         <Space direction='vertical' size='middle' style={{ width: '100%' }}>
+            {kind === 'task' && (
+                <TaskQualitySummary
+                    task={resource as Task}
+                    extraSummary={taskSummaryExtra}
+                    onMetricClick={(metric) => {
+                        if (metric === 'tp') openFrameGallery('tp');
+                        if (metric === 'fp') openFrameGallery('fp');
+                        if (metric === 'fn') openFrameGallery('fn');
+                    }}
+                    summaryOverride={parentJobSummary ?? undefined}
+                    frameCountsOverride={parentFrameCounts}
+                    frameCountsLoadingOverride={parentFrameCountsLoading}
+                />
+            )}
             {debugEnabled && (
                 <Card
                     size='small'
@@ -641,43 +1538,13 @@ export default function QualityTab(
                             resourceId: resource.id,
                             jobTaskId: kind === 'job' ? (resource as Job).taskId : null,
                             reportsLength: reports.length,
-                            selectedReportId,
+                            selectedReportId: null,
                             qualityError,
                             qualityDebug,
                         }, null, 2)}
                     </pre>
                 </Card>
             )}
-
-            <Card size='small'>
-                <Space wrap>
-                    <Button
-                        type='primary'
-                        loading={creatingReport}
-                        disabled={qualityLoading}
-                        onClick={createQualityReport}
-                    >
-                        {kind === 'job' ? '重新计算 (当前 Task)' : '生成 / 重新计算'}
-                    </Button>
-                    <Text>Report:</Text>
-                    <Select<number>
-                        style={{ minWidth: 250 }}
-                        loading={qualityLoading}
-                        value={selectedReportId ?? undefined}
-                        placeholder='Select a report'
-                        onChange={(val: number) => setSelectedReportId(val)}
-                        options={reports.map((r: any) => ({
-                            value: r.id,
-                            label: `#${r.id} (${r.target || 'unknown'}) - acc=${fmtRatio(r?.summary?.accuracy)} prec=${fmtRatio(r?.summary?.precision)} rec=${fmtRatio(r?.summary?.recall)} err=${fmtNum(getErrorCount(r?.summary))}`,
-                        }))}
-                    />
-                    {selectedReportId && (
-                        <>
-                            {/* kept slot for future */}
-                        </>
-                    )}
-                </Space>
-            </Card>
 
             {qualityError && <Alert type='error' message={qualityError} showIcon />}
             {qualityLoading && <Spin tip='Loading reports...' />}
@@ -707,332 +1574,75 @@ export default function QualityTab(
                 </Card>
             )}
 
-            <Card
-                size='small'
-                title={kind === 'job' ?
-                    `Job Reports (当前 job 最新: ${displayedJobReports.length})` :
-                    `Job Reports (每个 job 最新: ${displayedJobReports.length} / 原始 ${reports.filter((r: any) => r?.target === 'job').length})`}
-            >
-                {displayedJobReports.length ? (
-                <Table
-                        size='small'
-                        pagination={{ pageSize: 10, showSizeChanger: true }}
-                        rowKey={(r: any) => r.id}
-                        dataSource={displayedJobReports}
-                        onRow={(r: any) => ({
-                            onClick: () => {
-                                setSelectedReportId(r.id);
-                                setExpandedJobReportId((prev) => (prev === r.id ? null : r.id));
-                            },
-                            style: { cursor: 'pointer' },
-                        })}
-                        expandable={{
-                            expandedRowKeys: expandedJobReportId ? [expandedJobReportId] : [],
-                            onExpand: (expanded: boolean, r: any) => {
-                                if (!expanded) {
-                                    setExpandedJobReportId(null);
-                                    return;
-                                }
-                                setExpandedJobReportId(r.id);
-                            },
-                            expandedRowRender: (r: any) => {
-                                const jid = getJobId(r);
-                                if (typeof jid !== 'number') {
-                                    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='无法解析 job id' />;
-                                }
-                                const history = getJobHistoryForJobId(jid);
-                                if (history.length < 2) {
-                                    return (
-                                        <Empty
-                                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                                            description={history.length === 1 ? '只有 1 次计算结果，趋势图需要至少 2 次' : '暂无趋势数据'}
-                                        />
-                                    );
-                                }
-                                return (
-                                    <div style={{ padding: 8 }}>
-                                        <div style={{ height: 260 }}>
-                                            <Line
-                                                data={{
-                                                    labels: history.map((p: any) => p.label),
-                                                    datasets: [
-                                                        {
-                                                            label: 'Accuracy (%)',
-                                                            data: history.map((p: any) => (typeof p.accuracy === 'number' ? p.accuracy * 100 : null)),
-                                                            borderColor: '#1677ff',
-                                                            backgroundColor: 'rgba(22, 119, 255, 0.15)',
-                                                            tension: 0.25,
-                                                            spanGaps: true,
-                                                        },
-                                                        {
-                                                            label: 'Precision (%)',
-                                                            data: history.map((p: any) => (typeof p.precision === 'number' ? p.precision * 100 : null)),
-                                                            borderColor: '#52c41a',
-                                                            backgroundColor: 'rgba(82, 196, 26, 0.15)',
-                                                            tension: 0.25,
-                                                            spanGaps: true,
-                                                        },
-                                                        {
-                                                            label: 'Recall (%)',
-                                                            data: history.map((p: any) => (typeof p.recall === 'number' ? p.recall * 100 : null)),
-                                                            borderColor: '#faad14',
-                                                            backgroundColor: 'rgba(250, 173, 20, 0.15)',
-                                                            tension: 0.25,
-                                                            spanGaps: true,
-                                                        },
-                                                    ],
-                                                }}
-                                                options={{
-                                                    responsive: true,
-                                                    maintainAspectRatio: false,
-                                                    plugins: {
-                                                        legend: { position: 'top' as const },
-                                                        tooltip: { mode: 'index' as const, intersect: false },
-                                                    },
-                                                    interaction: { mode: 'index' as const, intersect: false },
-                                                    scales: {
-                                                        y: {
-                                                            min: 0,
-                                                            max: 100,
-                                                            ticks: { callback: (v: any) => `${v}%` },
-                                                        },
-                                                    },
-                                                }}
-                                            />
-                                        </div>
-                                    </div>
-                                );
-                            },
-                            rowExpandable: (r: any) => r?.target === 'job',
-                        }}
-                        columns={[
-                            { title: 'Report', dataIndex: 'id', key: 'id' },
-                            { title: 'Target', dataIndex: 'target', key: 'target' },
-                            { title: 'Job', key: 'job', render: (_: any, r: any) => getJobId(r) ?? '-' },
-                            {
-                                title: 'Assignee',
-                                key: 'assignee',
-                                render: (_: any, r: any) => {
-                                    const jid = getJobId(r);
-                                    if (typeof jid !== 'number') return '-';
-                                    return jobAssignees[jid] || '-';
-                                },
-                            },
-                            { title: 'Accuracy', key: 'accuracy', render: (_: any, r: any) => fmtRatio(r?.summary?.accuracy) },
-                            { title: 'Precision', key: 'precision', render: (_: any, r: any) => fmtRatio(r?.summary?.precision) },
-                            { title: 'Recall', key: 'recall', render: (_: any, r: any) => fmtRatio(r?.summary?.recall) },
-                            { title: 'Errors', key: 'errors', render: (_: any, r: any) => fmtNum(getErrorCount(r?.summary)) },
-                            {
-                                title: 'Created',
-                                key: 'created',
-                                render: (_: any, r: any) => {
-                                    const dt = getCreatedDateStr(r);
-                                    try { return dt ? new Date(dt).toLocaleString() : '-'; } catch { return dt || '-'; }
-                                },
-                            },
-                        ]}
-                    />
-                ) : (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 Reports' />
-                )}
-            </Card>
+            <JobReportsCard
+                kind={kind}
+                reports={reports}
+                displayedJobReports={displayedJobReports}
+                jobRows={jobRows}
+                filteredJobRows={filteredJobRows}
+                jobRowsStats={jobRowsStats}
+                jobRoleFilter={jobRoleFilter}
+                onJobRoleFilterChange={setJobRoleFilter}
+                hasJobRows={hasJobRows}
+                creatingReport={creatingReport}
+                qualityLoading={qualityLoading}
+                createQualityReport={createQualityReport}
+                expandedJobId={expandedJobId}
+                onExpandedJobChange={setExpandedJobId}
+                getJobHistoryForJobId={getJobHistoryForJobId}
+                jobAssignees={jobAssignees}
+            />
 
-            <Card size='small' title={`错误帧定位（按 Job，DS ↔ GT，可跳转）`}>
-                {displayedJobReports.length ? (
-                    <Table
-                        size='small'
-                        pagination={{ pageSize: 10, showSizeChanger: true }}
-                        rowKey={(r: any) => r.id}
-                        dataSource={displayedJobReports}
-                        expandable={{
-                            expandRowByClick: true,
-                            expandedRowRender: (r: any) => {
-                                const reportId = r?.id;
-                                const dsJobId = getJobId(r);
-                                const taskIdHint = (() => {
-                                    const fromReport = getTaskId(r);
-                                    if (kind === 'task') return resource.id;
-                                    if (kind === 'job') return (resource as Job).taskId;
-                                    return fromReport;
-                                })();
+            <ConflictsCard
+                kind={kind}
+                resource={resource}
+                conflictRoleFilter={conflictRoleFilter}
+                onConflictRoleFilterChange={setConflictRoleFilter}
+                conflictJobReports={conflictJobReports}
+                conflictsByReportId={conflictsByReportId}
+                conflictsLoadingByReportId={conflictsLoadingByReportId}
+                conflictsErrorByReportId={conflictsErrorByReportId}
+                validationByJobError={validationByJobError}
+                taskLayouts={taskLayouts}
+                jobLayouts={jobLayouts}
+                gtJobByTask={gtJobByTask}
+                taskIdByJob={taskIdByJob}
+                jobMetaById={jobMetaById}
+                jobAssignees={jobAssignees}
+                gtImageCountByJobId={gtImageCountByJobId}
+                orgSlug={core?.config?.organization?.organizationSlug ?? null}
+                ensureValidationContext={ensureValidationContext}
+                loadConflictsForReport={loadConflictsForReport}
+                onTilePreview={setTilePreview}
+            />
 
-                                const list = typeof reportId === 'number' ? (conflictsByReportId[reportId] ?? null) : null;
-                                const rows = getConflictFrameRowsFromConflicts(list);
+            <FrameGalleryModal
+                frameGallery={frameGallery}
+                onClose={() => setFrameGallery(null)}
+                onSelect={(m) => setTilePreview({
+                    src: m.preview,
+                    title: `Frame ${m.frame}`,
+                    tags: m.tags || [],
+                    severity: m.severity,
+                    dsLink: m.dsLink,
+                    gtLink: m.gtLink,
+                    dsJobId: m.dsJobId,
+                    gtJobId: m.gtJobId,
+                    dsFrame: m.dsFrame,
+                    gtFrame: m.gtFrame,
+                    dsAnnotationIds: m.dsAnnotationIds || [],
+                    gtAnnotationIds: m.gtAnnotationIds || [],
+                    overlayMode: m.overlayMode,
+                })}
+            />
 
-                                const taskIdResolved = (typeof dsJobId === 'number' ? (taskIdByJob[dsJobId] ?? taskIdHint ?? null) : taskIdHint ?? null);
-                                const mode = (typeof taskIdResolved === 'number' ? (taskLayouts[taskIdResolved]?.mode ?? null) : null);
-                                const gtJobId = (typeof taskIdResolved === 'number' ? (gtJobByTask[taskIdResolved] ?? null) : null);
-
-                                const validationFrames = (typeof taskIdResolved === 'number') ?
-                                    (taskLayouts[taskIdResolved]?.validationFrames ?? taskLayouts[taskIdResolved]?.validation_frames ?? []) : [];
-                                const validationSet = new Set(
-                                    (Array.isArray(validationFrames) ? validationFrames : [])
-                                        .map((v: any) => (typeof v === 'string' ? Number(v) : v))
-                                        .filter((v: any) => typeof v === 'number' && Number.isFinite(v)),
-                                );
-
-                                const jl = (typeof dsJobId === 'number') ? (jobLayouts[dsJobId] || null) : null;
-                                const honeypotFrames = jl?.honeypotFrames ?? jl?.honeypot_frames ?? [];
-                                const honeypotRealFrames = jl?.honeypotRealFrames ?? jl?.honeypot_real_frames ?? [];
-                                const hpMap = new Map<number, number>();
-                                if (Array.isArray(honeypotFrames) && Array.isArray(honeypotRealFrames)) {
-                                    for (let i = 0; i < honeypotFrames.length; i++) {
-                                        const k = (typeof honeypotFrames[i] === 'string') ? Number(honeypotFrames[i]) : honeypotFrames[i];
-                                        const v = (typeof honeypotRealFrames[i] === 'string') ? Number(honeypotRealFrames[i]) : honeypotRealFrames[i];
-                                        if (typeof k === 'number' && Number.isFinite(k) && typeof v === 'number' && Number.isFinite(v)) {
-                                            hpMap.set(k, v);
-                                        }
-                                    }
-                                }
-
-                                const mappedRows = rows.map((f: any) => {
-                                    const dsFrame = f.frame;
-                                    const gtFrame = mode === 'gt' ? dsFrame :
-                                        (mode === 'gt_pool' ? (hpMap.get(dsFrame) ?? null) : null);
-                                    const inValidation = gtFrame !== null ? validationSet.has(gtFrame) : validationSet.has(dsFrame);
-                                    const dsLink = (taskIdResolved && dsJobId) ? `/tasks/${taskIdResolved}/jobs/${dsJobId}?frame=${dsFrame}` : null;
-                                    const gtLink = (taskIdResolved && gtJobId && gtFrame !== null) ? `/tasks/${taskIdResolved}/jobs/${gtJobId}?frame=${gtFrame}` : null;
-                                    return {
-                                        ds_frame: dsFrame,
-                                        gt_frame: gtFrame,
-                                        in_validation: inValidation,
-                                        types: f.types || [],
-                                        severities: f.severities || [],
-                                        count: f.count || 0,
-                                        ds_link: dsLink,
-                                        gt_link: gtLink,
-                                    };
-                                });
-
-                                const loading = typeof reportId === 'number' ? !!conflictsLoadingByReportId[reportId] : false;
-                                const errMsg = typeof reportId === 'number' ? (conflictsErrorByReportId[reportId] || null) : null;
-                                const vErr = typeof dsJobId === 'number' ? (validationByJobError[dsJobId] || null) : null;
-
-                                return (
-                                    <div style={{ padding: 8 }}>
-                                        <Space style={{ marginBottom: 8 }} wrap>
-                                            <Text type='secondary'>mode: {String(mode ?? '-')}</Text>
-                                            <Text type='secondary'>GT job: {String(gtJobId ?? '-')}</Text>
-                                            {errMsg ? <Text type='danger'>{errMsg}</Text> : null}
-                                            {vErr ? <Text type='danger'>{vErr}</Text> : null}
-                                            {loading ? <Spin size='small' /> : null}
-                                        </Space>
-
-                                        {loading ? (
-                                            <div style={{ textAlign: 'center', padding: 12 }}><Spin /></div>
-                                        ) : (mappedRows.length ? (
-                                            <Table
-                                                size='small'
-                                                pagination={{ pageSize: 20, showSizeChanger: true }}
-                                                rowKey={(m: any) => String(m.ds_frame)}
-                                                dataSource={mappedRows}
-                                                columns={[
-                                                    { title: 'DS Frame', dataIndex: 'ds_frame', key: 'ds_frame' },
-                                                    {
-                                                        title: 'GT Frame',
-                                                        dataIndex: 'gt_frame',
-                                                        key: 'gt_frame',
-                                                        render: (v: any) => (typeof v === 'number' ? v : <Text type='secondary'>-</Text>),
-                                                    },
-                                                    {
-                                                        title: 'Severity',
-                                                        key: 'severity',
-                                                        render: (_: any, m: any) => (
-                                                            <Space wrap>
-                                                                {(m.severities || []).map((s: string) => (
-                                                                    <Tag key={s} color={s === 'error' ? 'red' : 'orange'}>{s}</Tag>
-                                                                ))}
-                                                            </Space>
-                                                        ),
-                                                    },
-                                                    {
-                                                        title: 'Type',
-                                                        key: 'type',
-                                                        render: (_: any, m: any) => (
-                                                            <Space wrap>
-                                                                {(m.types || []).map((t: string) => (
-                                                                    <Tag key={t}>{t}</Tag>
-                                                                ))}
-                                                            </Space>
-                                                        ),
-                                                    },
-                                                    { title: 'Count', dataIndex: 'count', key: 'count' },
-                                                    {
-                                                        title: '在 Validation Set',
-                                                        key: 'in_validation',
-                                                        render: (_: any, m: any) => (
-                                                            typeof m.in_validation === 'boolean' ? (
-                                                                m.in_validation ? <Tag color='green'>是</Tag> : <Tag>否</Tag>
-                                                            ) : <Text type='secondary'>-</Text>
-                                                        ),
-                                                    },
-                                                    {
-                                                        title: '跳转',
-                                                        key: 'open',
-                                                        render: (_: any, m: any) => (
-                                                            <Space>
-                                                                {m.ds_link ? <Button type='link' href={m.ds_link} target='_blank'>打开 DS</Button> : <Text type='secondary'>无 task/job</Text>}
-                                                                {m.gt_link ? <Button type='link' href={m.gt_link} target='_blank'>打开 GT</Button> : <Text type='secondary'>无映射/无 GT</Text>}
-                                                            </Space>
-                                                        ),
-                                                    },
-                                                ]}
-                                            />
-                                        ) : (
-                                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='该 job report 暂无 conflicts（可能 errors 来自统计但无明细，或接口无权限）' />
-                                        ))}
-                                    </div>
-                                );
-                            },
-                            onExpand: async (expanded: boolean, r: any) => {
-                                if (!expanded) return;
-                                const reportId = r?.id;
-                                const dsJobId = getJobId(r);
-                                const taskIdHint = (() => {
-                                    const fromReport = getTaskId(r);
-                                    if (kind === 'task') return resource.id;
-                                    if (kind === 'job') return (resource as Job).taskId;
-                                    return fromReport;
-                                })();
-
-                                if (typeof dsJobId === 'number') {
-                                    ensureValidationContext(dsJobId, taskIdHint ?? null);
-                                }
-                                if (typeof reportId === 'number' && !(reportId in conflictsByReportId)) {
-                                    loadConflictsForReport(reportId);
-                                }
-                            },
-                            rowExpandable: (r: any) => r?.target === 'job',
-                        }}
-                        columns={[
-                            { title: 'Report', dataIndex: 'id', key: 'id' },
-                            { title: 'DS Job', key: 'job', render: (_: any, r: any) => getJobId(r) ?? '-' },
-                            { title: 'Errors', key: 'errors', render: (_: any, r: any) => fmtNum(getErrorCount(r?.summary)) },
-                            {
-                                title: '冲突帧数',
-                                key: 'frames',
-                                render: (_: any, r: any) => {
-                                    const list = typeof r?.id === 'number' ? (conflictsByReportId[r.id] ?? null) : null;
-                                    const rows = getConflictFrameRowsFromConflicts(list);
-                                    return rows.length ? rows.length : <Text type='secondary'>-</Text>;
-                                },
-                            },
-                        ]}
-                    />
-                ) : (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description='暂无 job reports' />
-                )}
-                <div style={{ marginTop: 8 }}>
-                    <Text type='secondary' style={{ fontSize: 12 }}>
-                        * 映射逻辑：mode=gt 时 DS frame=GT frame；mode=gt_pool 时用 `job.validation_layout` 的 honeypotFrames→honeypotRealFrames 映射（非 honeypot 帧可能没有对应 GT）。
-                    </Text>
-                </div>
-            </Card>
-
-
-            {selectedReportId ? null : (
-                !qualityLoading && <Empty description='请选择一个 Report 查看详情' />
-            )}
+            <FramePreviewModal
+                tilePreview={tilePreview}
+                tileOverlay={tileOverlay}
+                tileImageSize={tileImageSize}
+                onClose={() => setTilePreview(null)}
+                onImageSize={setTileImageSize}
+            />
         </Space>
     );
 }

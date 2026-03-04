@@ -64,6 +64,7 @@ export default function QualityTab(
     const [gtPositiveByJobId, setGtPositiveByJobId] = useState<Record<number, number | null>>({});
     const [dsObjectCountByJobId, setDsObjectCountByJobId] = useState<Record<number, number | null>>({});
     const [gtObjectCountByJobId, setGtObjectCountByJobId] = useState<Record<number, number | null>>({});
+    const [gtPositiveFramesByJobId, setGtPositiveFramesByJobId] = useState<Record<number, number[] | null>>({});
     const [dsPositiveLoading, setDsPositiveLoading] = useState(false);
     const [gtPositiveLoading, setGtPositiveLoading] = useState(false);
     const [gtJobs, setGtJobs] = useState<Job[]>([]);
@@ -582,7 +583,7 @@ export default function QualityTab(
                 }
                 const hpFrames = toNumberArray(jl?.honeypotFrames ?? jl?.honeypot_frames ?? []);
                 const hpRealFrames = toNumberArray(jl?.honeypotRealFrames ?? jl?.honeypot_real_frames ?? []);
-                const frames = hpFrames.length ? hpFrames : hpRealFrames;
+                const frames = hpRealFrames.length ? hpRealFrames : hpFrames;
                 map.set(jobId, frames.length);
                 continue;
             }
@@ -597,6 +598,77 @@ export default function QualityTab(
 
         return map;
     }, [kind, resource.id, taskLayouts, jobLayouts, jobMetaById]);
+
+    const gtPositiveImageCountByJobId = useMemo(() => {
+        const map = new Map<number, number | null>();
+        if (kind !== 'task') return map;
+        const taskId = resource.id;
+        const taskLayout = taskLayouts[taskId] || null;
+        if (!taskLayout) return map;
+        const mode = taskLayout?.mode ?? null;
+        const validationFrames = toNumberArray(
+            taskLayout?.validationFrames ?? taskLayout?.validation_frames ?? [],
+        );
+
+        if (gtJobs.length) {
+            const allReady = gtJobs.every((job) => typeof job?.id === 'number' && (job.id in gtPositiveFramesByJobId));
+            if (!allReady) {
+                for (const [jobId] of jobMetaById.entries()) {
+                    map.set(jobId, null);
+                }
+                return map;
+            }
+        }
+
+        const gtPositiveFrameSet = new Set<number>();
+        for (const job of gtJobs) {
+            const jid = job?.id;
+            if (typeof jid !== 'number') continue;
+            const frames = gtPositiveFramesByJobId[jid];
+            if (Array.isArray(frames)) {
+                for (const f of frames) gtPositiveFrameSet.add(f);
+            }
+        }
+
+        for (const [jobId, meta] of jobMetaById.entries()) {
+            const job = meta?.job;
+            if (!job || !Number.isInteger(job.startFrame) || !Number.isInteger(job.stopFrame)) {
+                map.set(jobId, null);
+                continue;
+            }
+
+            let gtFrames: number[] = [];
+            if (mode === 'gt_pool') {
+                const jl = jobLayouts[jobId] || null;
+                if (!jl) {
+                    map.set(jobId, null);
+                    continue;
+                }
+                const hpFrames = toNumberArray(jl?.honeypotFrames ?? jl?.honeypot_frames ?? []);
+                const hpRealFrames = toNumberArray(jl?.honeypotRealFrames ?? jl?.honeypot_real_frames ?? []);
+                gtFrames = hpRealFrames.length ? hpRealFrames : hpFrames;
+            } else {
+                if (!validationFrames.length) {
+                    map.set(jobId, 0);
+                    continue;
+                }
+                gtFrames = filterFramesByRange(validationFrames, job.startFrame, job.stopFrame);
+            }
+
+            if (!gtFrames.length) {
+                map.set(jobId, 0);
+                continue;
+            }
+
+            let count = 0;
+            for (const f of gtFrames) {
+                if (gtPositiveFrameSet.has(f)) count += 1;
+            }
+            map.set(jobId, count);
+        }
+
+        return map;
+    }, [kind, resource.id, taskLayouts, jobLayouts, jobMetaById, gtJobs, gtPositiveFramesByJobId]);
 
     const filteredJobRows = useMemo(() => {
         if (jobRoleFilter === 'all') return jobRows;
@@ -1447,16 +1519,16 @@ export default function QualityTab(
                 );
                 const results = await asyncPool(1, missing, async (job) => {
                     if (!taskValidationFrames.length) {
-                        return { jobId: job.id, count: null, objectCount: null };
+                        return { jobId: job.id, count: null, objectCount: null, frames: null };
                     }
                     const framesInRange = filterFramesByRange(taskValidationFrames, job.startFrame, job.stopFrame);
                     const validationSet = new Set(framesInRange);
                     const frames = await listPositiveFramesForJob(job, validationSet);
                     if (frames === null) {
-                        return { jobId: job.id, count: null, objectCount: null };
+                        return { jobId: job.id, count: null, objectCount: null, frames: null };
                     }
                     const objectCount = await countObjectsForFrames(job, frames);
-                    return { jobId: job.id, count: frames.length, objectCount };
+                    return { jobId: job.id, count: frames.length, objectCount, frames };
                 });
 
                 if (cancelled) return;
@@ -1464,6 +1536,13 @@ export default function QualityTab(
                     const next = { ...prev };
                     for (const r of results) {
                         next[r.jobId] = r.count;
+                    }
+                    return next;
+                });
+                setGtPositiveFramesByJobId((prev) => {
+                    const next = { ...prev };
+                    for (const r of results) {
+                        next[r.jobId] = Array.isArray(r.frames) ? r.frames : null;
                     }
                     return next;
                 });
@@ -1610,6 +1689,7 @@ export default function QualityTab(
                 jobMetaById={jobMetaById}
                 jobAssignees={jobAssignees}
                 gtImageCountByJobId={gtImageCountByJobId}
+                gtPositiveImageCountByJobId={gtPositiveImageCountByJobId}
                 orgSlug={core?.config?.organization?.organizationSlug ?? null}
                 ensureValidationContext={ensureValidationContext}
                 loadConflictsForReport={loadConflictsForReport}

@@ -39,6 +39,7 @@ export type ConflictsCardProps = {
     jobMetaById: Map<number, { role: 'parent' | 'consensus' | 'single'; job: Job | null; parentJobId: number | null }>;
     jobAssignees: Record<number, string | null>;
     gtImageCountByJobId: Map<number, number | null>;
+    gtPositiveImageCountByJobId: Map<number, number | null>;
     orgSlug: string | null;
     ensureValidationContext: (dsJobId: number, preferredTaskId: number | null) => void;
     loadConflictsForReport: (reportId: number) => void;
@@ -63,6 +64,7 @@ export default function ConflictsCard(props: ConflictsCardProps): JSX.Element {
         jobMetaById,
         jobAssignees,
         gtImageCountByJobId,
+        gtPositiveImageCountByJobId,
         orgSlug,
         ensureValidationContext,
         loadConflictsForReport,
@@ -410,6 +412,23 @@ export default function ConflictsCard(props: ConflictsCardProps): JSX.Element {
                                 const jid = getJobId(r);
                                 if (typeof jid !== 'number') return <Text type='secondary'>-</Text>;
                                 const value = gtImageCountByJobId.get(jid);
+                                return typeof value === 'number' ? value : <Text type='secondary'>-</Text>;
+                            },
+                        },
+                        {
+                            title: (
+                                <span>
+                                    GT正样本图片数
+                                    <Tooltip title='仅统计该 Job 对应的 GT 图片中，GT>0 的帧数。'>
+                                        <QuestionCircleOutlined className='cvat-task-quality-help' style={{ marginLeft: 6 }} />
+                                    </Tooltip>
+                                </span>
+                            ),
+                            key: 'gt_positive',
+                            render: (_: any, r: any) => {
+                                const jid = getJobId(r);
+                                if (typeof jid !== 'number') return <Text type='secondary'>-</Text>;
+                                const value = gtPositiveImageCountByJobId.get(jid);
                                 return typeof value === 'number' ? value : <Text type='secondary'>-</Text>;
                             },
                         },

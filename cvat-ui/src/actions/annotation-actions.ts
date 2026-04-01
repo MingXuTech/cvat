@@ -57,38 +57,55 @@ async function syncJobOrganizationContext(
     currentOrganization: CombinedState['organizations']['current'],
 ): Promise<void> {
     // Job assignees can open the job itself even when they cannot read the parent task.
-    // Use the raw job payload to restore the org context before the first frame request.
-    const jobResponse = await cvat.server.request(`/api/jobs/${jobID}`, {
-        method: 'get',
-        params: { org: '' },
+    // Bypass axios interceptors here: forcing ?org= selects the personal workspace and breaks org jobs.
+    const jobResponse = await fetch(`/api/jobs/${jobID}`, {
+        credentials: 'include',
+        headers: {
+            Accept: 'application/json',
+        },
     });
-    const organizationID = jobResponse?.data?.organization_id ?? jobResponse?.data?.organization ?? null;
+    const jobPayload = await jobResponse.json();
 
-    if (currentOrganization?.id === organizationID) {
-        return;
+    if (!jobResponse.ok) {
+        throw new Error(jobPayload?.detail || `Could not fetch job ${jobID}`);
     }
 
-    if (currentOrganization) {
-        await cvat.organizations.deactivate();
-        localStorage.removeItem('currentOrganization');
-        dispatch(organizationActions.activateOrganizationSuccess(null));
+    const organizationID = jobPayload?.organization_id ?? jobPayload?.organization ?? null;
+    const activeOrganizationID = cvat.config.organization.organizationID ?? null;
+
+    if (currentOrganization?.id === organizationID && activeOrganizationID === organizationID) {
+        return;
     }
 
     if (organizationID === null) {
+        if (currentOrganization || activeOrganizationID !== null) {
+            await cvat.organizations.deactivate();
+            localStorage.removeItem('currentOrganization');
+            dispatch(organizationActions.activateOrganizationSuccess(null));
+        }
         return;
     }
 
-    const organizationsResponse = await cvat.server.request('/api/organizations', {
-        method: 'get',
-        params: {
-            org: '',
-            page_size: 1,
-            filter: JSON.stringify({
-                and: [{ '==': [{ var: 'id' }, organizationID] }],
-            }),
+    const organizationURL = new URL('/api/organizations', window.location.origin);
+    organizationURL.searchParams.set('org', '');
+    organizationURL.searchParams.set('page_size', '1');
+    organizationURL.searchParams.set('filter', JSON.stringify({
+        and: [{ '==': [{ var: 'id' }, organizationID] }],
+    }));
+
+    const organizationsResponse = await fetch(organizationURL.toString(), {
+        credentials: 'include',
+        headers: {
+            Accept: 'application/json',
         },
     });
-    const organizationData = organizationsResponse?.data?.results?.[0];
+    const organizationsPayload = await organizationsResponse.json();
+
+    if (!organizationsResponse.ok) {
+        throw new Error(organizationsPayload?.detail || `Could not fetch organization ${organizationID}`);
+    }
+
+    const organizationData = organizationsPayload?.results?.[0];
 
     if (!organizationData) {
         throw new Error(`Could not resolve organization for job ${jobID}`);

@@ -1090,7 +1090,13 @@ export function getJobAsync({
             if (gtJob) {
                 await gtJob.annotations.clear({ reload: true }); // fetch gt annotations from the server
                 groundTruthJobFramesMeta = await cvat.frames.getMeta('job', gtJob.id);
-                validationLayout = await job.validationLayout();
+                try {
+                    validationLayout = await job.validationLayout();
+                } catch (error) {
+                    if (error?.code !== 403) {
+                        throw error;
+                    }
+                }
             }
 
             let conflicts: QualityConflict[] = [];

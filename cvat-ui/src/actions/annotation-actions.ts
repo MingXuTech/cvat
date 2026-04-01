@@ -11,7 +11,7 @@ import {
     RectDrawingMethod, CuboidDrawingMethod, Canvas, CanvasMode as Canvas2DMode,
 } from 'cvat-canvas-wrapper';
 import {
-    getCore, MLModel, JobType, Job, QualityConflict,
+    getCore, MLModel, JobType, Job, QualityConflict, Organization,
     ObjectState, ObjectType, ShapeType, JobState, JobValidationLayout,
 } from 'cvat-core-wrapper';
 import logger, { EventScope } from 'cvat-logger';
@@ -29,6 +29,7 @@ import {
 } from 'reducers';
 import { switchToolsBlockerState } from './settings-actions';
 import { updateJobAsync } from './jobs-actions';
+import { organizationActions } from './organization-actions';
 
 interface AnnotationsParameters {
     filters: object[];
@@ -48,6 +49,55 @@ function getStore(): Store<CombinedState> {
         store = getCVATStore();
     }
     return store;
+}
+
+async function syncJobOrganizationContext(
+    dispatch: ThunkDispatch,
+    jobID: number,
+    currentOrganization: CombinedState['organizations']['current'],
+): Promise<void> {
+    // Job assignees can open the job itself even when they cannot read the parent task.
+    // Use the raw job payload to restore the org context before the first frame request.
+    const jobResponse = await cvat.server.request(`/api/jobs/${jobID}`, {
+        method: 'get',
+        params: { org: '' },
+    });
+    const organizationID = jobResponse?.data?.organization_id ?? jobResponse?.data?.organization ?? null;
+
+    if (currentOrganization?.id === organizationID) {
+        return;
+    }
+
+    if (currentOrganization) {
+        await cvat.organizations.deactivate();
+        localStorage.removeItem('currentOrganization');
+        dispatch(organizationActions.activateOrganizationSuccess(null));
+    }
+
+    if (organizationID === null) {
+        return;
+    }
+
+    const organizationsResponse = await cvat.server.request('/api/organizations', {
+        method: 'get',
+        params: {
+            org: '',
+            page_size: 1,
+            filter: JSON.stringify({
+                and: [{ '==': [{ var: 'id' }, organizationID] }],
+            }),
+        },
+    });
+    const organizationData = organizationsResponse?.data?.results?.[0];
+
+    if (!organizationData) {
+        throw new Error(`Could not resolve organization for job ${jobID}`);
+    }
+
+    const organization = new Organization(organizationData);
+    await cvat.organizations.activate(organization);
+    localStorage.setItem('currentOrganization', organization.slug);
+    dispatch(organizationActions.activateOrganizationSuccess(organization));
 }
 
 export function receiveAnnotationsParameters(): AnnotationsParameters {
@@ -990,6 +1040,7 @@ export function getJobAsync({
             const start = Date.now();
 
             getCore().config.globalObjectsCounter = 0;
+            await syncJobOrganizationContext(dispatch, jobID, state.organizations.current);
             const [job] = await cvat.jobs.get({ jobID });
             let gtJob: Job | null = null;
             if (job.type === JobType.ANNOTATION || job.type === JobType.CONSENSUS_REPLICA) {

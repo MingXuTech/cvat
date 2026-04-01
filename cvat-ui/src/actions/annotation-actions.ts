@@ -68,14 +68,13 @@ async function syncJobOrganizationContext(
     }
 
     const organizationID = jobPayload?.organization_id ?? jobPayload?.organization ?? null;
-    const activeOrganizationID = cvat.config.organization.organizationID ?? null;
 
-    if (currentOrganization?.id === organizationID && activeOrganizationID === organizationID) {
+    if (currentOrganization?.id === organizationID) {
         return;
     }
 
     if (organizationID === null) {
-        if (currentOrganization || activeOrganizationID !== null) {
+        if (currentOrganization) {
             await cvat.organizations.deactivate();
             localStorage.removeItem('currentOrganization');
             dispatch(organizationActions.activateOrganizationSuccess(null));

@@ -60,9 +60,6 @@ async function syncJobOrganizationContext(
     // Bypass axios interceptors here: forcing ?org= selects the personal workspace and breaks org jobs.
     const jobResponse = await fetch(`/api/jobs/${jobID}`, {
         credentials: 'include',
-        headers: {
-            Accept: 'application/json',
-        },
     });
     const jobPayload = await jobResponse.json();
 
@@ -95,9 +92,6 @@ async function syncJobOrganizationContext(
 
     const organizationsResponse = await fetch(organizationURL.toString(), {
         credentials: 'include',
-        headers: {
-            Accept: 'application/json',
-        },
     });
     const organizationsPayload = await organizationsResponse.json();
 

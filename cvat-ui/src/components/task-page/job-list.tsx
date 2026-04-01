@@ -33,7 +33,8 @@ const FilteringComponent = ResourceFilterHOC(
 
 interface Props {
     task: Task;
-    onJobUpdate(job: Job, data: Parameters<Job['save']>[0]): void;
+    onJobUpdate(job: Job, data: Parameters<Job['save']>[0]): Promise<void>;
+    readonly?: boolean;
 }
 
 function filterJobs(jobs: Job[], query: JobsQuery): Job[] {
@@ -74,7 +75,7 @@ function setUpJobsList(jobs: Job[], newPage: number, pageSize: number): Job[] {
 }
 
 function JobListComponent(props: Readonly<Props>): JSX.Element {
-    const { task: taskInstance, onJobUpdate } = props;
+    const { task: taskInstance, onJobUpdate, readonly } = props;
     const [visibility, setVisibility] = useState(defaultVisibility);
 
     const history = useHistory();
@@ -223,6 +224,7 @@ function JobListComponent(props: Readonly<Props>): JSX.Element {
                                                 job={job}
                                                 task={taskInstance}
                                                 onJobUpdate={onJobUpdate}
+                                                readonly={readonly}
                                                 childJobs={jobChildMapping[job.id] || []}
                                                 defaultCollapsed={!uncollapsedJobs[job.id]}
                                                 onCollapseChange={onCollapseChange}

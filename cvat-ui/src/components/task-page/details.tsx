@@ -12,7 +12,7 @@ import Text from 'antd/lib/typography/Text';
 import Title from 'antd/lib/typography/Title';
 
 import {
-    User, getCore, Project, Task, FramesMetaData,
+    User, getCore, Project, Task, FramesMetaData, SerializedLabel,
 } from 'cvat-core-wrapper';
 import AutomaticAnnotationProgress from 'components/tasks-page/automatic-annotation-progress';
 import MdGuideControl from 'components/md-guide/md-guide-control';
@@ -29,9 +29,10 @@ import ProjectSubsetField from '../create-task-page/project-subset-field';
 interface OwnProps {
     task: Task;
     onUpdateTask: (task: Task) => Promise<Task>;
-    taskMeta: FramesMetaData;
+    taskMeta: FramesMetaData | null;
     cloudStorageInstance: CloudStorage | null;
     onUpdateTaskMeta: (meta: FramesMetaData) => Promise<void>;
+    readonly?: boolean;
 }
 
 interface StateToProps {
@@ -92,7 +93,7 @@ class DetailsComponent extends React.PureComponent<Props, State> {
 
     private renderTaskName(): JSX.Element {
         const { name } = this.state;
-        const { task: taskInstance, onUpdateTask } = this.props;
+        const { task: taskInstance, onUpdateTask, readonly } = this.props;
         const taskName = name;
 
         return (
@@ -100,7 +101,7 @@ class DetailsComponent extends React.PureComponent<Props, State> {
                 <Col>
                     <Title
                         level={4}
-                        editable={{
+                        editable={readonly ? false : {
                             onChange: (value: string): void => {
                                 this.setState({
                                     name: value,
@@ -126,6 +127,7 @@ class DetailsComponent extends React.PureComponent<Props, State> {
             taskMeta,
             cloudStorageInstance,
             onUpdateTaskMeta,
+            readonly,
         } = this.props;
         const { consensusEnabled } = this.state;
         const owner = taskInstance.owner ? taskInstance.owner.username : null;
@@ -133,6 +135,7 @@ class DetailsComponent extends React.PureComponent<Props, State> {
         const created = dayjs(taskInstance.createdDate).format('MMMM Do YYYY');
         const assigneeSelect = (
             <UserSelector
+                disabled={readonly}
                 value={assignee}
                 onSelect={(value: User | null): void => {
                     if (taskInstance?.assignee?.id === value?.id) return;
@@ -161,37 +164,44 @@ class DetailsComponent extends React.PureComponent<Props, State> {
                     </Col>
                 </Row>
                 <Row justify='end' className='cvat-task-details-cloud-storage'>
-                    <CloudStorageEditor
-                        taskMeta={taskMeta}
-                        cloudStorageInstance={cloudStorageInstance}
-                        onUpdateTaskMeta={onUpdateTaskMeta}
-                    />
+                    {taskMeta && (
+                        <CloudStorageEditor
+                            taskMeta={taskMeta}
+                            cloudStorageInstance={cloudStorageInstance}
+                            disabled={readonly}
+                            onUpdateTaskMeta={onUpdateTaskMeta}
+                        />
+                    )}
                 </Row>
             </>
         );
     }
 
     private renderLabelsEditor(): JSX.Element {
-        const { task: taskInstance, onUpdateTask } = this.props;
+        const { task: taskInstance, onUpdateTask, readonly } = this.props;
 
         return (
-            <Row>
-                <Col span={24}>
-                    <LabelsEditorComponent
-                        labels={taskInstance.labels.map((label: any): string => label.toJSON())}
-                        onSubmit={(labels: any[]): void => {
-                            taskInstance.labels = labels.map((labelData): any => new core.classes.Label(labelData));
-                            onUpdateTask(taskInstance);
-                        }}
-                    />
-                </Col>
-            </Row>
+            <div className={readonly ? 'cvat-task-details-disabled-section' : ''}>
+                <Row>
+                    <Col span={24}>
+                        <LabelsEditorComponent
+                            labels={taskInstance.labels.map((label: any): SerializedLabel => label.toJSON())}
+                            onSubmit={(labels: any[]): void => {
+                                taskInstance.labels = labels.map((labelData): any => new core.classes.Label(labelData));
+                                onUpdateTask(taskInstance);
+                            }}
+                        />
+                    </Col>
+                </Row>
+            </div>
         );
     }
 
     private renderSubsetField(): JSX.Element {
         const { subset } = this.state;
-        const { task: taskInstance, project, onUpdateTask } = this.props;
+        const {
+            task: taskInstance, project, onUpdateTask, readonly,
+        } = this.props;
 
         return (
             <Row>
@@ -201,6 +211,7 @@ class DetailsComponent extends React.PureComponent<Props, State> {
                 <Col span={24}>
                     <ProjectSubsetField
                         value={subset}
+                        disabled={readonly}
                         projectId={taskInstance.projectId as number}
                         projectSubsets={project?.subsets ?? null}
                         onChange={(value) => {
@@ -223,6 +234,7 @@ class DetailsComponent extends React.PureComponent<Props, State> {
             task: taskInstance,
             cancelAutoAnnotation,
             onUpdateTask,
+            readonly,
         } = this.props;
 
         return (
@@ -250,6 +262,7 @@ class DetailsComponent extends React.PureComponent<Props, State> {
                             <Col span={12}>
                                 <BugTrackerEditor
                                     instance={taskInstance}
+                                    disabled={readonly}
                                     onChange={(bugTracker) => {
                                         taskInstance.bugTracker = bugTracker;
                                         onUpdateTask(taskInstance);

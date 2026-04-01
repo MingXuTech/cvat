@@ -14,6 +14,7 @@ interface Props {
     projectId: number;
     projectSubsets: string[] | null;
     value: string;
+    disabled?: boolean;
     onChange: (value: string) => void;
 }
 
@@ -24,7 +25,7 @@ interface ProjectPartialWithSubsets {
 
 export default function ProjectSubsetField(props: Props): JSX.Element {
     const {
-        projectId, projectSubsets, value, onChange,
+        projectId, projectSubsets, value, onChange, disabled,
     } = props;
 
     const [internalValue, setInternalValue] = useState('');
@@ -63,6 +64,7 @@ export default function ProjectSubsetField(props: Props): JSX.Element {
         <Autocomplete
             value={internalValue}
             placeholder='Input subset'
+            disabled={disabled}
             className='cvat-project-search-field cvat-project-subset-field'
             onSearch={setInternalValue}
             onSelect={(_value) => {

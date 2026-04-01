@@ -13,11 +13,12 @@ import patterns from 'utils/validation-patterns';
 
 interface Props {
     instance: any;
+    disabled?: boolean;
     onChange: (bugTracker: string) => void;
 }
 
 export default function BugTrackerEditorComponent(props: Props): JSX.Element {
-    const { instance, onChange } = props;
+    const { instance, onChange, disabled } = props;
 
     const [bugTracker, setBugTracker] = useState(instance.bugTracker);
     const [bugTrackerEditing, setBugTrackerEditing] = useState(false);
@@ -53,7 +54,7 @@ export default function BugTrackerEditorComponent(props: Props): JSX.Element {
                     <Text strong className='cvat-text-color'>
                         Issue Tracker
                     </Text>
-                    <Text editable={{ onChange: onChangeValue }} className='cvat-issue-tracker-value'>
+                    <Text editable={disabled ? false : { onChange: onChangeValue }} className='cvat-issue-tracker-value'>
                         {bugTracker}
                     </Text>
                     <br />
@@ -78,12 +79,14 @@ export default function BugTrackerEditorComponent(props: Props): JSX.Element {
                 </Text>
                 <Text
                     className='cvat-issue-tracker-value'
-                    editable={{
+                    editable={disabled ? false : {
                         editing: bugTrackerEditing,
                         onStart,
                         onChange: onChangeValue,
                     }}
-                />
+                >
+                    {disabled ? 'Not set' : ''}
+                </Text>
             </Col>
         </Row>
     );

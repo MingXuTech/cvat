@@ -14,7 +14,7 @@ import notification from 'antd/lib/notification';
 import { getInferenceStatusAsync } from 'actions/models-actions';
 import { updateJobAsync, jobsActions } from 'actions/jobs-actions';
 import {
-    getCore, Task, Job, FramesMetaData,
+    getCore, Task, Job, FramesMetaData, ServerError,
 } from 'cvat-core-wrapper';
 import { TaskNotFoundComponent } from 'components/common/not-found';
 import JobListComponent from 'components/task-page/job-list';
@@ -29,6 +29,18 @@ import { getCloudStorageById } from './cloud-storage-editor';
 
 const core = getCore();
 
+function isPermissionDenied(error: unknown): boolean {
+    if (error instanceof ServerError) {
+        return error.code === 403;
+    }
+
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+        return Number((error as { code?: number }).code) === 403;
+    }
+
+    return String(error).includes('403');
+}
+
 function TaskPageComponent(): JSX.Element {
     const history = useHistory();
     const id = +useParams<{ id: string }>().id;
@@ -37,6 +49,8 @@ function TaskPageComponent(): JSX.Element {
     const [taskMeta, setTaskMeta] = useState<FramesMetaData | null>(null);
     const [cloudStorageInstance, setCloudStorageInstance] = useState<CloudStorage | null>(null);
     const [fetchingTask, setFetchingTask] = useState(true);
+    const [taskReadonly, setTaskReadonly] = useState(false);
+    const [jobReadonly, setJobReadonly] = useState(false);
 
     const {
         deletes,
@@ -102,6 +116,18 @@ function TaskPageComponent(): JSX.Element {
         const promise = dispatch(updateTaskAsync(task, {}));
         promise.then((updatedTask: Task) => {
             setTaskInstance(updatedTask);
+        }).catch(async (error: unknown) => {
+            if (isPermissionDenied(error)) {
+                if (!taskReadonly) {
+                    notification.warning({
+                        message: 'Task details are now read-only',
+                        description: 'The server denied the update request. Inline task editing has been disabled for this page.',
+                    });
+                }
+
+                setTaskReadonly(true);
+                await receiveTask();
+            }
         });
         return promise;
     };
@@ -118,8 +144,24 @@ function TaskPageComponent(): JSX.Element {
         })
     );
 
-    const onJobUpdate = (job: Job, data: Parameters<Job['save']>[0]): void => {
-        dispatch(updateJobAsync(job, data));
+    const onJobUpdate = async (job: Job, data: Parameters<Job['save']>[0]): Promise<void> => {
+        try {
+            await dispatch(updateJobAsync(job, data));
+        } catch (error) {
+            if (isPermissionDenied(error)) {
+                if (!jobReadonly) {
+                    notification.warning({
+                        message: 'Job updates are now read-only',
+                        description: 'The server denied the update request. Inline job editing has been disabled for this page.',
+                    });
+                }
+
+                setJobReadonly(true);
+                await receiveTask();
+            }
+
+            throw error;
+        }
     };
 
     return (
@@ -138,8 +180,9 @@ function TaskPageComponent(): JSX.Element {
                         taskMeta={taskMeta}
                         cloudStorageInstance={cloudStorageInstance}
                         onUpdateTaskMeta={onUpdateTaskMeta}
+                        readonly={taskReadonly}
                     />
-                    <JobListComponent task={taskInstance} onJobUpdate={onJobUpdate} />
+                    <JobListComponent task={taskInstance} onJobUpdate={onJobUpdate} readonly={jobReadonly} />
                 </Col>
             </Row>
             <ModelRunnerModal />

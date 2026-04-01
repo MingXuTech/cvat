@@ -30,7 +30,7 @@ import { CombinedState } from 'reducers';
 import Collapse from 'antd/lib/collapse';
 import CVATTag, { TagType } from 'components/common/cvat-tag';
 import JobActionsComponent from 'components/jobs-page/actions-menu';
-import { JobStageSelector, JobStateSelector } from './job-selectors';
+import { getJobStateClassName, JobStageSelector, JobStateSelector } from './job-selectors';
 
 function formatDate(value: Dayjs): string {
     return value.format('MMM Do YYYY HH:mm');
@@ -39,11 +39,12 @@ function formatDate(value: Dayjs): string {
 interface Props {
     job: Job;
     task: Task;
-    onJobUpdate: (job: Job, fields: Parameters<Job['save']>[0]) => void;
+    onJobUpdate: (job: Job, fields: Parameters<Job['save']>[0]) => Promise<void>;
     childJobs?: Job[];
     defaultCollapsed?: boolean;
     onCollapseChange?: (jobID: number, collapsed: boolean) => void;
     selected?: boolean;
+    readonly?: boolean;
     onClick?: (event?: React.MouseEvent) => void;
 }
 
@@ -55,7 +56,7 @@ function ReviewSummaryComponent({ jobInstance }: Readonly<{ jobInstance: Job }>)
     useEffect(() => {
         setError(null);
         jobInstance
-            .issues(jobInstance.id)
+            .issues()
             .then((issues: any[]) => {
                 if (isMounted()) {
                     setSummary({
@@ -112,7 +113,7 @@ function ReviewSummaryComponent({ jobInstance }: Readonly<{ jobInstance: Job }>)
 
 function JobItem(props: Readonly<Props>): JSX.Element {
     const {
-        job, task, onJobUpdate, childJobs, defaultCollapsed, onCollapseChange, selected, onClick,
+        job, task, onJobUpdate, childJobs, defaultCollapsed, onCollapseChange, selected, readonly, onClick,
     } = props;
 
     const deletes = useSelector((state: CombinedState) => state.jobs.activities.deletes);
@@ -132,12 +133,20 @@ function JobItem(props: Readonly<Props>): JSX.Element {
     const frameCountPercent = ((job.frameCount / (task.size || 1)) * 100).toFixed(0);
     const frameCountPercentRepresentation = frameCountPercent === '0' ? '<1' : frameCountPercent;
     const jobName = `Job #${job.id}`;
+    const jobStateClassName = getJobStateClassName(state);
 
     let childJobViews: React.JSX.Element[] = [];
     if (childJobs && childJobs.length > 0) {
         const sortedChildJobs = [...childJobs].sort((a, b) => a.id - b.id);
         childJobViews = sortedChildJobs.map((eachJob: Job) => (
-            <JobItem key={eachJob.id} job={eachJob} task={task} onJobUpdate={onJobUpdate} selected={selected} />
+            <JobItem
+                key={eachJob.id}
+                job={eachJob}
+                task={task}
+                onJobUpdate={onJobUpdate}
+                readonly={readonly}
+                selected={selected}
+            />
         ));
     }
 
@@ -166,7 +175,7 @@ function JobItem(props: Readonly<Props>): JSX.Element {
     const card = (
         <Card
             ref={itemRef}
-            className={`cvat-job-item${selected ? ' cvat-item-selected' : ''}`}
+            className={`cvat-job-item ${jobStateClassName}${selected ? ' cvat-item-selected' : ''}`.trim()}
             style={{ ...style }}
             data-row-id={job.id}
             onClick={onClick}
@@ -218,6 +227,7 @@ function JobItem(props: Readonly<Props>): JSX.Element {
                                     </Row>
                                     <UserSelector
                                         className='cvat-job-assignee-selector'
+                                        disabled={readonly}
                                         value={job.assignee}
                                         onSelect={(user: User | null): void => {
                                             if (job?.assignee?.id === user?.id) return;
@@ -232,6 +242,7 @@ function JobItem(props: Readonly<Props>): JSX.Element {
                                         </Col>
                                     </Row>
                                     <JobStageSelector
+                                        disabled={readonly}
                                         value={stage}
                                         onSelect={(newValue: JobStage) => {
                                             onJobUpdate(job, { stage: newValue });
@@ -245,6 +256,7 @@ function JobItem(props: Readonly<Props>): JSX.Element {
                                         </Col>
                                     </Row>
                                     <JobStateSelector
+                                        disabled={readonly}
                                         value={state}
                                         onSelect={(newValue: JobState) => {
                                             onJobUpdate(job, { state: newValue });

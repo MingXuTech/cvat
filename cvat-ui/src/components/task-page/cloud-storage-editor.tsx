@@ -14,6 +14,7 @@ import {
 interface Props {
     taskMeta: FramesMetaData,
     cloudStorageInstance: CloudStorage,
+    disabled?: boolean;
     onUpdateTaskMeta: (meta: FramesMetaData) => Promise<void>;
 }
 
@@ -31,7 +32,9 @@ export async function getCloudStorageById(id: number): Promise<CloudStorage | nu
 }
 
 export default function CloudStorageEditorComponent(props: Props): JSX.Element | null {
-    const { taskMeta, cloudStorageInstance, onUpdateTaskMeta } = props;
+    const {
+        taskMeta, cloudStorageInstance, onUpdateTaskMeta, disabled,
+    } = props;
 
     const [searchPhrase, setSearchPhrase] = useState(cloudStorageInstance ? cloudStorageInstance.displayName : '');
 
@@ -45,6 +48,7 @@ export default function CloudStorageEditorComponent(props: Props): JSX.Element |
         <SelectCloudStorage
             searchPhrase={searchPhrase}
             cloudStorage={cloudStorageInstance}
+            disabled={disabled}
             setSearchPhrase={setSearchPhrase}
             onSelectCloudStorage={(_cloudStorage: CloudStorage | null) => {
                 if (_cloudStorage) {

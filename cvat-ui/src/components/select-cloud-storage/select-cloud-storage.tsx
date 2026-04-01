@@ -17,6 +17,7 @@ export interface Props {
     searchPhrase: string;
     cloudStorage: CloudStorage | null;
     name?: string[];
+    disabled?: boolean;
     setSearchPhrase: (searchPhrase: string) => void;
     onSelectCloudStorage: (cloudStorageId: number | null) => void;
     label?: JSX.Element;
@@ -26,7 +27,7 @@ async function searchCloudStorages(filter: Record<string, string>): Promise<Clou
     try {
         const data = await getCore().cloudStorages.get(filter);
         return data;
-    } catch (error) {
+    } catch (error: any) {
         notification.error({
             message: 'Could not fetch a list of cloud storages',
             description: error.toString(),
@@ -54,6 +55,7 @@ function SelectCloudStorage(props: Props): JSX.Element {
         searchPhrase,
         cloudStorage,
         name,
+        disabled,
         setSearchPhrase,
         onSelectCloudStorage,
         label,
@@ -105,6 +107,7 @@ function SelectCloudStorage(props: Props): JSX.Element {
                 onBlur={onBlur}
                 value={searchPhrase}
                 placeholder='Search...'
+                disabled={disabled}
                 showSearch
                 onSearch={(phrase: string) => {
                     setSearchPhrase(phrase);
@@ -140,7 +143,7 @@ function SelectCloudStorage(props: Props): JSX.Element {
                 allowClear
                 className={`cvat-search${!name ? '-' : `-${name[0].replace('Storage', '-storage')}-`}cloud-storage-field`}
             >
-                <Input />
+                <Input disabled={disabled} />
             </AutoComplete>
         </Form.Item>
     );

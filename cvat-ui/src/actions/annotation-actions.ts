@@ -352,9 +352,18 @@ async function fetchAnnotations(predefinedFrame?: number): Promise<{
 
         if (validationLayout) {
             gtFrame = await validationLayout.getRealFrame(gtFrame);
+        } else if (
+            fetchFrame < groundTruthInstance.startFrame ||
+            fetchFrame > groundTruthInstance.stopFrame
+        ) {
+            gtFrame = null;
         }
 
-        if (gtFrame !== null) {
+        if (
+            gtFrame !== null &&
+            gtFrame >= groundTruthInstance.startFrame &&
+            gtFrame <= groundTruthInstance.stopFrame
+        ) {
             const gtStates = await groundTruthInstance.annotations.get(gtFrame, showAllInterpolationTracks, filters);
             states.push(...gtStates);
         }

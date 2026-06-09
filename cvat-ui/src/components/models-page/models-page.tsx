@@ -37,6 +37,7 @@ function ModelsPageComponent(): JSX.Element {
         query,
         bulkFetching,
         interactors,
+        pointAssistants,
         detectors,
         trackers,
         reid,
@@ -47,6 +48,7 @@ function ModelsPageComponent(): JSX.Element {
         query: state.models.query,
         bulkFetching: state.bulkActions.fetching,
         interactors: state.models.interactors,
+        pointAssistants: state.models.pointAssistants,
         detectors: state.models.detectors,
         trackers: state.models.trackers,
         reid: state.models.reid,
@@ -58,7 +60,7 @@ function ModelsPageComponent(): JSX.Element {
 
     const { page, pageSize } = updatedQuery;
     const models = setUpModelsList(
-        [...interactors, ...detectors, ...trackers, ...reid],
+        [...interactors, ...pointAssistants, ...detectors, ...trackers, ...reid],
         page,
         pageSize,
     );

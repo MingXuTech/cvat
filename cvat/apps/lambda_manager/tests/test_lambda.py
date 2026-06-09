@@ -310,6 +310,9 @@ class LambdaTestCases(_LambdaTestCaseBase):
             response = self._get_request(path, self.admin)
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             self._check_expected_keys_in_response_function(response.data)
+            if id_func == id_function_interactor:
+                self.assertEqual(response.data["interactive_type"], "point_proposer")
+                self.assertEqual(response.data["supported_prompt_types"], ["point", "box"])
 
             response = self._get_request(path, self.user)
             self.assertEqual(response.status_code, status.HTTP_200_OK)

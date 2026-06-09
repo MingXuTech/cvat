@@ -10,9 +10,14 @@ import { RQStatus, ShapeType } from './enums';
 import { SerializedCollection } from './server-response-types';
 
 export interface InteractorResults {
-    mask: number[][];
+    mask?: number[][];
     points?: [number, number][];
     bounds?: [number, number, number, number]
+}
+
+export interface PointProposalResults {
+    points: [number, number][];
+    scores?: number[];
 }
 
 export interface MinimalShape {
@@ -79,7 +84,7 @@ class LambdaManager {
         return result.id;
     }
 
-    async call(taskID, model, args): Promise<TrackerResults | InteractorResults | SerializedCollection> {
+    async call(taskID, model, args): Promise<TrackerResults | InteractorResults | PointProposalResults | SerializedCollection> {
         if (!Number.isInteger(taskID) || taskID < 0) {
             throw new ArgumentError(`Argument taskID must be a positive integer. Got "${taskID}"`);
         }

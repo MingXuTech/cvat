@@ -25,12 +25,14 @@ function ModelActionsComponent(props: Readonly<ModelActionsProps>): JSX.Element 
     } = props;
     const {
         interactors,
+        pointAssistants,
         detectors,
         trackers,
         reid,
         selectedIds,
     } = useSelector((state: CombinedState) => ({
         interactors: state.models.interactors,
+        pointAssistants: state.models.pointAssistants,
         detectors: state.models.detectors,
         trackers: state.models.trackers,
         reid: state.models.reid,
@@ -39,6 +41,7 @@ function ModelActionsComponent(props: Readonly<ModelActionsProps>): JSX.Element 
 
     const allModels = [
         ...interactors,
+        ...pointAssistants,
         ...detectors,
         ...trackers,
         ...reid,

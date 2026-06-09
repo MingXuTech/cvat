@@ -2,3 +2,8 @@ tls:
   certificates:
     - certFile: /certs/cvat.crt
       keyFile: /certs/cvat.key
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/cvat.crt
+        keyFile: /certs/cvat.key

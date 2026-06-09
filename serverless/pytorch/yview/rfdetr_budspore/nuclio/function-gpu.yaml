@@ -1,0 +1,67 @@
+metadata:
+  name: pth-yview-rfdetr-budspore
+  namespace: cvat
+  annotations:
+    name: RF-DETR Budspore
+    type: detector
+    spec: |
+      [
+        { "id": 0, "name": "芽孢", "type": "mask" }
+      ]
+
+spec:
+  description: RF-DETR budspore detector refined to masks with SAM
+  runtime: 'python:3.10'
+  handler: main:handler
+  eventTimeout: 600s
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "1"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: compute,utility
+    - name: RFDETR_UPSTREAM_URL
+      value: http://172.20.2.148:8787/api/detect
+    - name: RFDETR_REQUEST_TIMEOUT
+      value: "300"
+    - name: RFDETR_MODEL_KEY
+      value: new
+    - name: RFDETR_LABEL
+      value: 芽孢
+    - name: SAM_CHECKPOINT
+      value: /opt/nuclio/sam/sam_vit_h_4b8939.pth
+    - name: SAM_MODEL_TYPE
+      value: vit_h
+
+  build:
+    image: cvat.pth.yview.rfdetr.budspore:latest-gpu
+    baseImage: cvat.pth.facebookresearch.sam.vit_h:latest-gpu
+
+    directives:
+      preCopy:
+        - kind: ENV
+          value: NVIDIA_VISIBLE_DEVICES=1
+        - kind: ENV
+          value: CUDA_VISIBLE_DEVICES=0
+        - kind: ENV
+          value: NVIDIA_DRIVER_CAPABILITIES=compute,utility
+        - kind: USER
+          value: root
+        - kind: WORKDIR
+          value: /opt/nuclio/function
+
+  triggers:
+    myHttpTrigger:
+      numWorkers: 1
+      kind: 'http'
+      workerAvailabilityTimeoutMilliseconds: 10000
+      attributes:
+        maxRequestBodySize: 33554432
+
+  platform:
+    attributes:
+      restartPolicy:
+        name: always
+        maximumRetryCount: 3
+      mountMode: volume

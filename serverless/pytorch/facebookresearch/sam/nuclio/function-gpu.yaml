@@ -24,6 +24,10 @@ spec:
   env:
     - name: PYTHONPATH
       value: /opt/nuclio/sam
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "GPU-d3a5bf19-bf4b-1b3a-3c1b-b542a1b7c120,GPU-a30baf99-cd30-0f01-c248-bfa0018cb2b3"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "GPU-d3a5bf19-bf4b-1b3a-3c1b-b542a1b7c120,GPU-a30baf99-cd30-0f01-c248-bfa0018cb2b3"
 
   build:
     image: cvat.pth.facebookresearch.sam.vit_h:latest-gpu
@@ -33,21 +37,38 @@ spec:
       preCopy:
       # set NVIDIA container runtime settings
         - kind: ENV
-          value: NVIDIA_VISIBLE_DEVICES=all
+          value: NVIDIA_VISIBLE_DEVICES=GPU-d3a5bf19-bf4b-1b3a-3c1b-b542a1b7c120,GPU-a30baf99-cd30-0f01-c248-bfa0018cb2b3
+        - kind: ENV
+          value: CUDA_VISIBLE_DEVICES=GPU-d3a5bf19-bf4b-1b3a-3c1b-b542a1b7c120,GPU-a30baf99-cd30-0f01-c248-bfa0018cb2b3
         - kind: ENV
           value: NVIDIA_DRIVER_CAPABILITIES=compute,utility
       # disable interactive frontend
         - kind: ENV
           value: DEBIAN_FRONTEND=noninteractive
+      # use fast local mirrors where possible and proxy external downloads
+        - kind: ENV
+          value: http_proxy=http://172.20.2.148:8888
+        - kind: ENV
+          value: https_proxy=http://172.20.2.148:8888
+        - kind: ENV
+          value: no_proxy=localhost,127.0.0.1,::1,host.docker.internal,mirrors.tuna.tsinghua.edu.cn,pypi.tuna.tsinghua.edu.cn,cvat_redis_ondisk,cvat_redis_inmem,cvat_db,nuclio,172.20.0.0/16
+        - kind: ENV
+          value: PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        - kind: ENV
+          value: PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+        - kind: ENV
+          value: PIP_DEFAULT_TIMEOUT=120
       # set workdir
         - kind: WORKDIR
           value: /opt/nuclio/sam
       # install basic deps
         - kind: RUN
-          value: apt-get update && apt-get -y install curl git python3 python3-pip python-is-python3 ffmpeg libsm6 libxext6 && rm -rf /var/lib/apt/lists/*
+          value: MIRROR=http://mirrors.tuna.tsinghua.edu.cn/ubuntu && sed -i "s|https\?://archive.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://security.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" /etc/apt/sources.list && apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false update && apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false -y install curl git python3 python3-pip python-is-python3 ffmpeg libsm6 libxext6 && rm -rf /var/lib/apt/lists/*
       # install sam deps
         - kind: RUN
-          value: pip3 install torch torchvision torchaudio pycocotools matplotlib onnxruntime onnx --no-cache-dir
+          value: pip3 install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
+        - kind: RUN
+          value: pip3 install 'numpy<2' pycocotools matplotlib onnxruntime onnx --no-cache-dir
       # install sam code
         - kind: RUN
           value: pip3 install git+https://github.com/facebookresearch/segment-anything.git --no-cache-dir
@@ -57,7 +78,7 @@ spec:
 
   triggers:
     myHttpTrigger:
-      numWorkers: 1
+      numWorkers: 6
       kind: 'http'
       workerAvailabilityTimeoutMilliseconds: 10000
       attributes:

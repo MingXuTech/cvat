@@ -46,6 +46,12 @@
     }
 
     .cvat-job-page-list-item {
+        --cvat-job-state-surface: #ffffff;
+        --cvat-job-state-surface-darkreader: #1f1f1f;
+        --cvat-job-state-text: rgba(0, 0, 0, 88%);
+        --cvat-job-state-text-darkreader: rgba(255, 255, 255, 88%);
+        --cvat-job-state-border: rgba(0, 0, 0, 6%);
+        --cvat-job-state-border-darkreader: rgba(255, 255, 255, 10%);
         display: flex;
         flex-direction: column;
 
@@ -57,6 +63,22 @@
 
         .ant-card-body {
             padding: $grid-unit-size;
+            background-color: var(--cvat-job-state-surface);
+            color: var(--cvat-job-state-text);
+            border-top: 1px solid var(--cvat-job-state-border);
+            transition:
+                background-color $box-shadow-transition,
+                border-color $box-shadow-transition,
+                color $box-shadow-transition;
+
+            .ant-descriptions,
+            .ant-descriptions-item,
+            .ant-descriptions-item-label,
+            .ant-descriptions-item-content,
+            .cvat-job-card-more-button,
+            .cvat-menu-icon {
+                color: inherit;
+            }
 
             .ant-descriptions-item {
                 padding: 0;
@@ -79,6 +101,42 @@
             .cvat-job-page-list-item-type {
                 opacity: 1;
             }
+        }
+
+        &.cvat-job-state-new {
+            --cvat-job-state-surface: #ffffff;
+            --cvat-job-state-surface-darkreader: #1f1f1f;
+            --cvat-job-state-text: rgba(0, 0, 0, 88%);
+            --cvat-job-state-text-darkreader: rgba(255, 255, 255, 88%);
+            --cvat-job-state-border: rgba(0, 0, 0, 6%);
+            --cvat-job-state-border-darkreader: rgba(255, 255, 255, 10%);
+        }
+
+        &.cvat-job-state-in-progress {
+            --cvat-job-state-surface: #1677ff;
+            --cvat-job-state-surface-darkreader: #1677ff;
+            --cvat-job-state-text: rgba(255, 255, 255, 94%);
+            --cvat-job-state-text-darkreader: rgba(255, 255, 255, 94%);
+            --cvat-job-state-border: #1677ff;
+            --cvat-job-state-border-darkreader: #1677ff;
+        }
+
+        &.cvat-job-state-rejected {
+            --cvat-job-state-surface: #ff4d4f;
+            --cvat-job-state-surface-darkreader: #ff4d4f;
+            --cvat-job-state-text: rgba(255, 255, 255, 94%);
+            --cvat-job-state-text-darkreader: rgba(255, 255, 255, 94%);
+            --cvat-job-state-border: #ff4d4f;
+            --cvat-job-state-border-darkreader: #ff4d4f;
+        }
+
+        &.cvat-job-state-completed {
+            --cvat-job-state-surface: #1f1f1f;
+            --cvat-job-state-surface-darkreader: #111111;
+            --cvat-job-state-text: rgba(255, 255, 255, 94%);
+            --cvat-job-state-text-darkreader: rgba(255, 255, 255, 94%);
+            --cvat-job-state-border: rgba(255, 255, 255, 10%);
+            --cvat-job-state-border-darkreader: rgba(255, 255, 255, 12%);
         }
 
         :nth-child(4n) {
@@ -207,5 +265,17 @@
         bottom: $grid-unit-size * 2;
         right: $grid-unit-size;
         font-size: 16px;
+    }
+}
+
+html[data-darkreader-mode] {
+    .cvat-jobs-page {
+        .cvat-job-page-list-item {
+            .ant-card-body {
+                background-color: var(--cvat-job-state-surface-darkreader) !important;
+                color: var(--cvat-job-state-text-darkreader) !important;
+                border-top-color: var(--cvat-job-state-border-darkreader) !important;
+            }
+        }
     }
 }

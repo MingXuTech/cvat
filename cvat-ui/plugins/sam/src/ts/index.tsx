@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 import { LRUCache } from 'lru-cache';
-import { CVATCore, MLModel, Job } from 'cvat-core-wrapper';
+import {
+    CVATCore, MLModel, Job, DimensionType,
+} from 'cvat-core-wrapper';
 import { PluginEntryPoint, APIWrapperEnterOptions, ComponentBuilder } from 'components/plugins-entrypoint';
 import { InitBody, DecodeBody, WorkerAction } from './inference.worker';
 
@@ -48,16 +50,173 @@ interface SAMPlugin {
         embeddings: LRUCache<string, Float32Array>;
         lowResMasks: LRUCache<string, Float32Array>;
         lastClicks: ClickType[];
+        prefetch: {
+            active: boolean;
+            queue: SAMEmbeddingPrefetchRequest[];
+            failedAt: Map<string, number>;
+            lastFrameKey: string | null;
+        };
     };
     callbacks: {
         onStatusChange: ((status: string) => void) | null;
     };
 }
 
+interface SAMEmbeddingPrefetchRequest {
+    taskID: number;
+    model: MLModel;
+    jobID: number;
+    frame: number;
+}
+
 interface ClickType {
     clickType: 0 | 1 | 2 | 3;
     x: number;
     y: number;
+}
+
+const SAM_PREFETCH_LOOKAHEAD = 2;
+const SAM_PREFETCH_FAILURE_COOLDOWN_MS = 10000;
+const SAM_PREFETCH_FLAG = '__sam_prefetch';
+
+function getEmbeddingKey(taskID: number, frame: number): string {
+    return `${taskID}_${frame}`;
+}
+
+function isPrefetchRequest(args: unknown): boolean {
+    return !!(
+        args &&
+        typeof args === 'object' &&
+        (args as Record<string, unknown>)[SAM_PREFETCH_FLAG]
+    );
+}
+
+function cacheEmbedding(plugin: SAMPlugin, taskID: number, frame: number, result: unknown): boolean {
+    const blob = result && typeof result === 'object' ? (result as { blob?: unknown }).blob : null;
+    if (typeof blob !== 'string') {
+        return false;
+    }
+
+    const bin = window.atob(blob);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i);
+    }
+
+    plugin.data.embeddings.set(getEmbeddingKey(taskID, frame), new Float32Array(bytes.buffer));
+    return true;
+}
+
+function canPrefetchEmbedding(plugin: SAMPlugin, taskID: number, frame: number): boolean {
+    const key = getEmbeddingKey(taskID, frame);
+    if (plugin.data.embeddings.has(key)) {
+        return false;
+    }
+
+    const failedAt = plugin.data.prefetch.failedAt.get(key);
+    if (typeof failedAt === 'number') {
+        if (Date.now() - failedAt < SAM_PREFETCH_FAILURE_COOLDOWN_MS) {
+            return false;
+        }
+
+        plugin.data.prefetch.failedAt.delete(key);
+    }
+
+    return true;
+}
+
+function runNextEmbeddingPrefetch(plugin: SAMPlugin): void {
+    if (plugin.data.prefetch.active || !plugin.data.core) {
+        return;
+    }
+
+    const request = plugin.data.prefetch.queue.shift();
+    if (!request) {
+        return;
+    }
+
+    if (!canPrefetchEmbedding(plugin, request.taskID, request.frame)) {
+        runNextEmbeddingPrefetch(plugin);
+        return;
+    }
+
+    plugin.data.prefetch.active = true;
+    const key = getEmbeddingKey(request.taskID, request.frame);
+
+    plugin.data.core.lambda.call(request.taskID, request.model, {
+        [SAM_PREFETCH_FLAG]: true,
+        frame: request.frame,
+        job: request.jobID,
+        pos_points: [],
+        neg_points: [],
+        obj_bbox: [],
+    }).catch(() => {
+        plugin.data.prefetch.failedAt.set(key, Date.now());
+    }).finally(() => {
+        plugin.data.prefetch.active = false;
+        runNextEmbeddingPrefetch(plugin);
+    });
+}
+
+function scheduleEmbeddingPrefetch(
+    plugin: SAMPlugin,
+    taskID: number,
+    model: MLModel,
+    job: Job,
+    frame: number,
+    includeCurrent = false,
+): void {
+    const queue: SAMEmbeddingPrefetchRequest[] = [];
+    const firstFrame = includeCurrent ? frame : frame + 1;
+    for (let nextFrame = firstFrame; nextFrame <= frame + SAM_PREFETCH_LOOKAHEAD; nextFrame++) {
+        if (nextFrame > job.stopFrame) {
+            break;
+        }
+
+        if (canPrefetchEmbedding(plugin, taskID, nextFrame)) {
+            queue.push({
+                taskID,
+                model,
+                jobID: job.id,
+                frame: nextFrame,
+            });
+        }
+    }
+
+    plugin.data.prefetch.queue = queue;
+    runNextEmbeddingPrefetch(plugin);
+}
+
+function scheduleEmbeddingPrefetchForState(plugin: SAMPlugin, state: any): void {
+    const annotation = state?.annotation;
+    const frameData = annotation?.player?.frame;
+    const job = annotation?.job?.instance;
+    const frame = frameData?.number;
+    const model = state?.models?.interactors?.find((_model: MLModel) => _model.id === plugin.data.modelID);
+
+    if (
+        !model ||
+        frameData?.data?.deleted ||
+        typeof frame !== 'number' ||
+        !job ||
+        typeof job.id !== 'number' ||
+        typeof job.taskId !== 'number' ||
+        job.dimension !== DimensionType.DIMENSION_2D
+    ) {
+        plugin.data.prefetch.lastFrameKey = null;
+        return;
+    }
+
+    const frameKey = `${job.id}_${job.taskId}_${frame}`;
+    if (plugin.data.prefetch.lastFrameKey === frameKey) {
+        return;
+    }
+
+    plugin.data.prefetch.lastFrameKey = frameKey;
+    plugin.data.jobs = {
+        [job.id]: job,
+    };
+    scheduleEmbeddingPrefetch(plugin, job.taskId, model, job, frame, true);
 }
 
 function toMatImage(input: number[], width: number, height: number): number[][] {
@@ -137,11 +296,12 @@ const samPlugin: SAMPlugin = {
                 async enter(
                     plugin: SAMPlugin,
                     taskID: number,
-                    model: MLModel, { frame }: { frame: number; },
+                    model: MLModel,
+                    { frame }: { frame: number; },
                 ): Promise<null | APIWrapperEnterOptions> {
                     return new Promise((resolve, reject) => {
                         function resolvePromise(): void {
-                            const key = `${taskID}_${frame}`;
+                            const key = getEmbeddingKey(taskID, frame);
                             if (plugin.data.embeddings.has(key)) {
                                 resolve({ preventMethodCall: true });
                             } else {
@@ -186,19 +346,25 @@ const samPlugin: SAMPlugin = {
                     result: unknown,
                     taskID: number,
                     model: MLModel,
-                    {
-                        frame, pos_points, neg_points, obj_bbox,
-                    }: {
+                    args: {
                         frame: number;
                         pos_points: number[][];
                         neg_points: number[][];
                         obj_bbox: number[][];
+                        __sam_prefetch?: boolean;
                     },
                 ): Promise<{
                         mask: number[][];
                         bounds: [number, number, number, number];
                     } | unknown> {
                     return new Promise((resolve, reject) => {
+                        const {
+                            frame,
+                            pos_points: posPoints,
+                            neg_points: negPoints,
+                            obj_bbox: objBbox,
+                        } = args;
+
                         if (model.id !== plugin.data.modelID) {
                             resolve(result);
                             return;
@@ -217,30 +383,34 @@ const samPlugin: SAMPlugin = {
                             [job.id]: job,
                         };
 
+                        if (isPrefetchRequest(args)) {
+                            if (result && plugin.data.core) {
+                                cacheEmbedding(plugin, taskID, frame, result);
+                            }
+
+                            resolve(result);
+                            return;
+                        }
+
                         job.frames.get(frame)
                             .then(({ height: imHeight, width: imWidth }: { height: number; width: number }) => {
-                                const key = `${taskID}_${frame}`;
+                                const key = getEmbeddingKey(taskID, frame);
 
                                 if (result) {
-                                    const bin = window.atob((result as { blob: string }).blob);
-                                    const bytes = new Uint8Array(bin.length);
-                                    for (let i = 0; i < bin.length; i++) {
-                                        bytes[i] = bin.charCodeAt(i);
-                                    }
-                                    plugin.data.embeddings.set(key, new Float32Array(bytes.buffer));
+                                    cacheEmbedding(plugin, taskID, frame, result);
                                 }
 
                                 const clicks: ClickType[] = [];
-                                if (obj_bbox.length) {
-                                    clicks.push({ clickType: 2, x: obj_bbox[0][0], y: obj_bbox[0][1] });
-                                    clicks.push({ clickType: 3, x: obj_bbox[1][0], y: obj_bbox[1][1] });
+                                if (objBbox.length) {
+                                    clicks.push({ clickType: 2, x: objBbox[0][0], y: objBbox[0][1] });
+                                    clicks.push({ clickType: 3, x: objBbox[1][0], y: objBbox[1][1] });
                                 }
 
-                                pos_points.forEach((point) => {
+                                posPoints.forEach((point) => {
                                     clicks.push({ clickType: 1, x: point[0], y: point[1] });
                                 });
 
-                                neg_points.forEach((point) => {
+                                negPoints.forEach((point) => {
                                     clicks.push({ clickType: 0, x: point[0], y: point[1] });
                                 });
 
@@ -276,6 +446,7 @@ const samPlugin: SAMPlugin = {
                                         const imageData = onnxToImage(mask, xbr - xtl + 1, ybr - ytl + 1);
                                         plugin.data.lowResMasks.set(key, lowResMask);
                                         plugin.data.lastClicks = clicks;
+                                        scheduleEmbeddingPrefetch(plugin, taskID, model, job, frame);
 
                                         resolve({
                                             mask: imageData,
@@ -315,6 +486,12 @@ const samPlugin: SAMPlugin = {
             updateAgeOnHas: true,
         }),
         lastClicks: [],
+        prefetch: {
+            active: false,
+            queue: [],
+            failedAt: new Map(),
+            lastFrameKey: null,
+        },
     },
     callbacks: {
         onStatusChange: null,
@@ -327,11 +504,18 @@ const builder: ComponentBuilder = ({ core }) => {
 
     return {
         name: samPlugin.name,
+        globalStateDidUpdate: (state: any) => {
+            scheduleEmbeddingPrefetchForState(samPlugin, state);
+        },
         destructor: () => {
             samPlugin.data.embeddings.clear();
             samPlugin.data.lowResMasks.clear();
             samPlugin.data.worker.terminate();
             samPlugin.data.lastClicks = [];
+            samPlugin.data.prefetch.active = false;
+            samPlugin.data.prefetch.queue = [];
+            samPlugin.data.prefetch.failedAt.clear();
+            samPlugin.data.prefetch.lastFrameKey = null;
             samPlugin.data.jobs = {};
             samPlugin.data.core = null;
             samPlugin.data.initialized = false;

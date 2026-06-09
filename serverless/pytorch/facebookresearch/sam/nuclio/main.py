@@ -19,6 +19,14 @@ def init_context(context):
 def handler(context, event):
     context.logger.info("call handler")
     data = event.body
+    if isinstance(data, (bytes, bytearray)):
+        data = data.decode("utf-8")
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    if not isinstance(data, dict):
+        raise TypeError(f"Unexpected payload type: {type(data).__name__}")
+
     buf = io.BytesIO(base64.b64decode(data["image"]))
     image = Image.open(buf)
     image = image.convert("RGB")  #  to make sure image comes in RGB

@@ -50,6 +50,7 @@ export type FrameGalleryState = {
 };
 
 export type TilePreview = {
+    nonce: number;
     src: string | null;
     title: string;
     tags: string[];

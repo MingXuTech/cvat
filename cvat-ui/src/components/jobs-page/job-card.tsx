@@ -13,7 +13,9 @@ import { MoreOutlined } from '@ant-design/icons';
 import { Job, JobType } from 'cvat-core-wrapper';
 import { useCardHeightHOC, useContextMenuClick } from 'utils/hooks';
 import Preview from 'components/common/preview';
+import { getJobStateClassName } from 'components/job-item/job-selectors';
 import { CombinedState } from 'reducers';
+import { readLatestFrame } from 'utils/remember-latest-frame';
 import JobActionsComponent from './actions-menu';
 
 const useCardHeight = useCardHeightHOC({
@@ -23,6 +25,19 @@ const useCardHeight = useCardHeightHOC({
     minHeight: 200,
     numberOfRows: 3,
 });
+
+function getLatestFrameProgress(job: Job): number | null {
+    const latestFrame = readLatestFrame(job.id);
+    if (
+        typeof latestFrame !== 'number' ||
+        latestFrame < job.startFrame ||
+        latestFrame > job.stopFrame
+    ) {
+        return null;
+    }
+
+    return latestFrame - job.startFrame + 1;
+}
 
 interface Props {
     job: Job;
@@ -64,55 +79,14 @@ function JobCardComponent(props: Readonly<Props>): JSX.Element {
         tag = 'Consensus';
     }
 
-    const projectName = job.projectName;
-    const cardClassName = `cvat-job-page-list-item${selected ? ' cvat-item-selected' : ''}`;
+    const { projectName } = job;
+    const jobStateClassName = getJobStateClassName(job.state);
+    const cardClassName = `cvat-job-page-list-item ${jobStateClassName}${selected ? ' cvat-item-selected' : ''}`.trim();
+    const latestFrameProgress = getLatestFrameProgress(job);
+    const framesProgressValue = Math.min(job.frameCount, Math.max(latestFrameProgress ?? 0, 0));
+    const framesProgressText = `${framesProgressValue}/${job.frameCount}`;
 
     /* eslint-disable jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */
-    const card = (
-        <Card
-            ref={itemRef}
-            style={{ ...style, height }}
-            className={cardClassName}
-            cover={(
-                <>
-                    <Preview
-                        job={job}
-                        onClick={handleCardClick}
-                        loadingClassName='cvat-job-item-loading-preview'
-                        emptyPreviewClassName='cvat-job-item-empty-preview'
-                        previewWrapperClassName='cvat-jobs-page-job-item-card-preview-wrapper'
-                        previewClassName='cvat-jobs-page-job-item-card-preview'
-                    />
-                    <div className='cvat-job-page-list-item-id'>
-                        ID:
-                        {` ${job.id}`}
-                    </div>
-                    {tag && <div className='cvat-job-page-list-item-type'>{tag}</div>}
-                    <div className='cvat-job-page-list-item-dimension'>{job.dimension.toUpperCase()}</div>
-                </>
-            )}
-            hoverable
-            onClick={onClick}
-            onContextMenuCapture={handleContextMenuCapture}
-        >
-            <Descriptions column={1} size='small'>
-                <Descriptions.Item label='Stage and state'>{`${job.stage} ${job.state}`}</Descriptions.Item>
-                <Descriptions.Item label='Frames'>{job.stopFrame - job.startFrame + 1}</Descriptions.Item>
-                {job.assignee ? (
-                    <Descriptions.Item label='Assignee'>{job.assignee.username}</Descriptions.Item>
-                ) : (
-                    <Descriptions.Item label='Assignee'> </Descriptions.Item>
-                )}
-            </Descriptions>
-            <div
-                onClick={handleContextMenuClick}
-                className='cvat-job-card-more-button cvat-actions-menu-button'
-            >
-                <MoreOutlined className='cvat-menu-icon' />
-            </div>
-        </Card>
-    );
-
     return (
         <JobActionsComponent
             jobInstance={job}
@@ -153,10 +127,11 @@ function JobCardComponent(props: Readonly<Props>): JSX.Element {
                     )}
                     hoverable
                     onClick={onClick}
+                    onContextMenuCapture={handleContextMenuCapture}
                 >
                     <Descriptions column={1} size='small'>
                         <Descriptions.Item label='Stage and state'>{`${job.stage} ${job.state}`}</Descriptions.Item>
-                        <Descriptions.Item label='Frames'>{job.stopFrame - job.startFrame + 1}</Descriptions.Item>
+                        <Descriptions.Item label='Frames'>{framesProgressText}</Descriptions.Item>
                         {job.assignee ? (
                             <Descriptions.Item label='Assignee'>{job.assignee.username}</Descriptions.Item>
                         ) : (

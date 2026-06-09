@@ -1549,6 +1549,16 @@ def create_thread(
     if not (is_data_in_cloud and is_backup_restore):
         TaskFrameProvider(db_task=db_task).get_preview()
 
+    if db_task.dimension == models.DimensionType.DIM_2D and db_data.size:
+        def enqueue_sam_embedding_prewarm() -> None:
+            from cvat.apps.lambda_manager.sam_embedding_prewarm import (
+                enqueue_sam_embedding_prewarm_for_task,
+            )
+
+            enqueue_sam_embedding_prewarm_for_task(db_task.id)
+
+        transaction.on_commit(enqueue_sam_embedding_prewarm)
+
 def _create_static_chunks(db_task: models.Task, *, media_extractor: IMediaReader, upload_dir: Path) -> None:
     @attrs.define
     class _ChunkProgressUpdater:

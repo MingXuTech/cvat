@@ -40,5 +40,9 @@ export function writeLatestFrame(jobID: number, frame: number): void {
 
 export function readLatestFrame(jobID: number): number | null {
     const latestFrameStorage = readLatestFrameStorage();
-    return latestFrameStorage.get(jobID) || null;
+    if (!latestFrameStorage.has(jobID)) {
+        return null;
+    }
+
+    return latestFrameStorage.get(jobID) ?? null;
 }

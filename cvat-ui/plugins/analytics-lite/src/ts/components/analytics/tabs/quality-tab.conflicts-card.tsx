@@ -43,7 +43,7 @@ export type ConflictsCardProps = {
     orgSlug: string | null;
     ensureValidationContext: (dsJobId: number, preferredTaskId: number | null) => void;
     loadConflictsForReport: (reportId: number) => void;
-    onTilePreview: React.Dispatch<React.SetStateAction<TilePreview | null>>;
+    onTilePreview: (preview: Omit<TilePreview, 'nonce'>) => void;
 };
 
 export default function ConflictsCard(props: ConflictsCardProps): JSX.Element {

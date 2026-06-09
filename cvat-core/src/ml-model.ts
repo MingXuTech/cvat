@@ -70,6 +70,15 @@ export default class MLModel {
         return result;
     }
 
+    public get interactiveType(): string | undefined {
+        return this.serialized.interactive_type;
+    }
+
+    public get supportedPromptTypes(): string[] {
+        return Array.isArray(this.serialized.supported_prompt_types) ?
+            [...this.serialized.supported_prompt_types] : [];
+    }
+
     public get tip(): MLModelTip {
         return {
             message: this.serialized.help_message,

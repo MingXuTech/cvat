@@ -5,10 +5,27 @@
 @import 'base';
 
 .cvat-job-item {
+    --cvat-job-state-accent: transparent;
+    --cvat-job-state-surface: rgba(255, 255, 255, 0%);
+    --cvat-job-state-text: #595959;
     border: 1px solid $border-color-1;
     border-radius: $border-radius-base;
     margin-bottom: $grid-unit-size;
-    background: $background-color-1;
+    background: linear-gradient(90deg, var(--cvat-job-state-surface) 0%, rgba(255, 255, 255, 0) 34%), $background-color-1;
+    overflow: hidden;
+    position: relative;
+    transition:
+        box-shadow $box-shadow-transition,
+        border-color $box-shadow-transition,
+        background $box-shadow-transition;
+
+    &::before {
+        content: '';
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 5px;
+        background: var(--cvat-job-state-accent);
+    }
 
     .cvat-job-item-issues-summary-icon {
         margin-left: $grid-unit-size;
@@ -28,6 +45,8 @@
     .ant-card-body {
         padding: $grid-unit-size * 2;
         min-height: $grid-unit-size * 9;
+        position: relative;
+        z-index: 1;
     }
 
     .cvat-job-item-selects {
@@ -91,10 +110,141 @@
 
 }
 
+.cvat-job-item.cvat-job-state-new {
+    --cvat-job-state-accent: transparent;
+    --cvat-job-state-surface: rgba(255, 255, 255, 0%);
+    --cvat-job-state-text: #595959;
+}
+
+.cvat-job-item.cvat-job-state-in-progress {
+    --cvat-job-state-accent: #1677ff;
+    --cvat-job-state-surface: rgba(22, 119, 255, 10%);
+    --cvat-job-state-text: #0958d9;
+}
+
+.cvat-job-item.cvat-job-state-rejected {
+    --cvat-job-state-accent: #ff4d4f;
+    --cvat-job-state-surface: rgba(255, 77, 79, 10%);
+    --cvat-job-state-text: #cf1322;
+}
+
+.cvat-job-item.cvat-job-state-completed {
+    --cvat-job-state-accent: #1f1f1f;
+    --cvat-job-state-surface: rgba(0, 0, 0, 12%);
+    --cvat-job-state-text: #1f1f1f;
+}
+
 .ant-menu.cvat-job-item-menu {
     box-shadow: $box-shadow-base;
 }
 
 .cvat-job-item-stage, .cvat-job-item-state {
     width: $grid-unit-size * 16;
+}
+
+.cvat-job-item-state {
+    .ant-select-selector {
+        transition:
+            border-color $box-shadow-transition,
+            background-color $box-shadow-transition,
+            color $box-shadow-transition;
+    }
+
+    .ant-select-selection-item {
+        font-weight: 600;
+    }
+
+    &.cvat-job-state-new {
+        .ant-select-selector {
+            background-color: #ffffff;
+            border-color: rgba(0, 0, 0, 12%) !important;
+        }
+
+        .ant-select-selection-item,
+        .ant-select-arrow {
+            color: rgba(0, 0, 0, 88%);
+        }
+    }
+
+    &.cvat-job-state-in-progress {
+        .ant-select-selector {
+            background-color: rgba(22, 119, 255, 9%);
+            border-color: rgba(22, 119, 255, 40%) !important;
+        }
+
+        .ant-select-selection-item,
+        .ant-select-arrow {
+            color: #0958d9;
+        }
+    }
+
+    &.cvat-job-state-rejected {
+        .ant-select-selector {
+            background-color: rgba(255, 77, 79, 10%);
+            border-color: rgba(255, 77, 79, 45%) !important;
+        }
+
+        .ant-select-selection-item,
+        .ant-select-arrow {
+            color: #cf1322;
+        }
+    }
+
+    &.cvat-job-state-completed {
+        .ant-select-selector {
+            background-color: #1f1f1f;
+            border-color: rgba(0, 0, 0, 60%) !important;
+        }
+
+        .ant-select-selection-item,
+        .ant-select-arrow {
+            color: rgba(255, 255, 255, 94%);
+        }
+    }
+}
+
+.cvat-job-item-state-dropdown {
+    .ant-select-item-option.cvat-job-state-new {
+        color: rgba(0, 0, 0, 88%);
+    }
+
+    .ant-select-item-option.cvat-job-state-in-progress {
+        color: #0958d9;
+    }
+
+    .ant-select-item-option.cvat-job-state-rejected {
+        color: #cf1322;
+    }
+
+    .ant-select-item-option.cvat-job-state-completed {
+        color: #1f1f1f;
+    }
+}
+
+html[data-darkreader-mode] {
+    .cvat-job-item {
+        background: $background-color-1;
+    }
+
+    .cvat-job-item.cvat-job-state-new {
+        border-color: rgba(255, 255, 255, 10%);
+    }
+
+    .cvat-job-item.cvat-job-state-in-progress {
+        border-color: rgba(#1677ff, 35%);
+    }
+
+    .cvat-job-item.cvat-job-state-rejected {
+        border-color: rgba(#ff4d4f, 35%);
+    }
+
+    .cvat-job-item.cvat-job-state-completed {
+        border-color: rgba(255, 255, 255, 18%);
+    }
+
+    .cvat-job-item-state {
+        .ant-select-selector {
+            background-color: transparent !important;
+        }
+    }
 }

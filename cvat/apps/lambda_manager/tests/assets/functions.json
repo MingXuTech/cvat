@@ -57,7 +57,9 @@
         "annotations": {
           "name": "DEXTR",
           "spec": "",
-          "type": "interactor"
+          "type": "interactor",
+          "interactive_type": "point_proposer",
+          "supported_prompt_types": "point, box"
         }
       },
       "spec": {

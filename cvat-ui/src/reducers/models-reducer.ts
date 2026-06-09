@@ -11,11 +11,14 @@ import { SelectionActionsTypes, SelectionActions } from 'actions/selection-actio
 import { MLModel, ModelKind } from 'cvat-core-wrapper';
 import { ModelsState, SelectedResourceType } from '.';
 
+const POINT_PROPOSER_INTERACTIVE_TYPE = 'point_proposer';
+
 const defaultState: ModelsState = {
     initialized: false,
     fetching: false,
     creatingStatus: '',
     interactors: [],
+    pointAssistants: [],
     detectors: [],
     trackers: [],
     reid: [],
@@ -55,7 +58,12 @@ export default function (
             return {
                 ...state,
                 interactors: action.payload.models.filter((model: MLModel) => (
-                    model.kind === ModelKind.INTERACTOR
+                    model.kind === ModelKind.INTERACTOR &&
+                    model.interactiveType !== POINT_PROPOSER_INTERACTIVE_TYPE
+                )),
+                pointAssistants: action.payload.models.filter((model: MLModel) => (
+                    model.kind === ModelKind.INTERACTOR &&
+                    model.interactiveType === POINT_PROPOSER_INTERACTIVE_TYPE
                 )),
                 detectors: action.payload.models.filter((model: MLModel) => (
                     model.kind === ModelKind.DETECTOR

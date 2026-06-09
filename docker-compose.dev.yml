@@ -14,6 +14,10 @@ services:
     build:
       context: .
       args:
+        FETCH_PROXY:
+        FETCH_NO_PROXY:
+        GO_MODULE_PROXY:
+        GO_MODULE_SUMDB:
         http_proxy:
         https_proxy:
         socks_proxy:
@@ -28,7 +32,7 @@ services:
       CVAT_DEBUG_WAIT: '${CVAT_DEBUG_WAIT_CLIENT:-no}'
       COVERAGE_PROCESS_START:
     ports:
-      - '127.0.0.1:9090:9090'
+      - '${CVAT_SERVER_DEBUG_HOST_PORT:-127.0.0.1:9090}:9090'
 
   cvat_worker_export:
     environment:
@@ -110,7 +114,7 @@ services:
 
   cvat_redis_inmem:
     ports:
-      - '127.0.0.1:6379:6379'
+      - '${CVAT_REDIS_INMEM_HOST_PORT:-127.0.0.1:6379}:6379'
 
   cvat_redis_ondisk:
     ports:

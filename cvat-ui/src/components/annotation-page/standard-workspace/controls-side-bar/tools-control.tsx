@@ -14,6 +14,7 @@ import Icon, {
 } from '@ant-design/icons';
 import Popover from 'antd/lib/popover';
 import Select from 'antd/lib/select';
+import Input from 'antd/lib/input';
 import Button from 'antd/lib/button';
 import Modal from 'antd/lib/modal';
 import Text from 'antd/lib/typography/Text';
@@ -28,7 +29,7 @@ import { AIToolsIcon } from 'icons';
 import { Canvas, convertShapesForInteractor } from 'cvat-canvas-wrapper';
 import {
     getCore, Label, MLModel, ObjectState, ObjectType, ShapeType, Job,
-    MinimalShape, InteractorResults, TrackerResults,
+    MinimalShape, InteractorResults, TrackerResults, PointProposalResults,
 } from 'cvat-core-wrapper';
 import openCVWrapper, { MatType } from 'utils/opencv-wrapper/opencv-wrapper';
 import {
@@ -62,6 +63,7 @@ interface StateToProps {
     isActivated: boolean;
     frame: number;
     interactors: MLModel[];
+    pointAssistants: MLModel[];
     detectors: MLModel[];
     trackers: MLModel[];
     curZOrder: number;
@@ -99,7 +101,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
             drawing: { activeLabelID },
         },
         models: {
-            interactors, detectors, trackers,
+            interactors, pointAssistants, detectors, trackers,
         },
         settings: {
             workspace: { toolsBlockerState, defaultApproxPolyAccuracy },
@@ -117,6 +119,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
 
     return {
         interactors,
+        pointAssistants,
         detectors,
         trackers,
         isActivated: activeControl === ActiveControl.AI_TOOLS,
@@ -153,15 +156,20 @@ interface TrackedShape {
 
 interface State {
     activeInteractor: MLModel | null;
+    activePointAssistant: MLModel | null;
     activeLabelID: number | null;
     activeTracker: MLModel | null;
+    pointAssistantTextPrompt: string;
+    pointAssistantPromptMode: 'point' | 'box';
+    pointAssistantPromptPoints: [number, number][];
+    pointAssistantPreviewPoints: [number, number][];
     startInteractingWithBox: boolean;
     convertMasksToPolygons: boolean;
     trackedShapes: TrackedShape[];
     fetching: boolean;
     pointsReceived: boolean;
     approxPolyAccuracy: number;
-    mode: 'detection' | 'interaction' | 'tracking';
+    mode: 'detection' | 'interaction' | 'tracking' | 'point-assistance';
     portals: React.ReactPortal[];
 }
 
@@ -245,17 +253,44 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         hideMessage: (() => void) | null;
     };
 
+    private pointAssistantSession: {
+        id: string | null;
+        finishRequested: boolean;
+        latestRequest: null | {
+            pointAssistant: MLModel;
+            data: {
+                frame: number;
+                job: number;
+                prompt?: string;
+                pos_points: number[][];
+                neg_points: number[][];
+                obj_bbox: number[][];
+            };
+            restartInteraction: boolean;
+        };
+        hideMessage: (() => void) | null;
+    };
+
     public constructor(props: Props) {
         super(props);
 
+        const { interactors, pointAssistants } = props;
         const supportedTrackers = this.getSupportedTrackers();
+        const defaultPointAssistantPromptMode = pointAssistants[0]?.supportedPromptTypes.includes('point') ?
+            'point' :
+            'box';
 
         this.state = {
             convertMasksToPolygons: false,
             startInteractingWithBox: false,
-            activeInteractor: props.interactors.length ? props.interactors[0] : null,
+            activeInteractor: interactors.length ? interactors[0] : null,
+            activePointAssistant: pointAssistants.length ? pointAssistants[0] : null,
             activeTracker: supportedTrackers.length ? supportedTrackers[0] : null,
             activeLabelID: props.labels.length ? props.labels[0].id as number : null,
+            pointAssistantTextPrompt: '',
+            pointAssistantPromptMode: defaultPointAssistantPromptMode,
+            pointAssistantPromptPoints: [],
+            pointAssistantPreviewPoints: [],
             approxPolyAccuracy: props.defaultApproxPolyAccuracy,
             trackedShapes: [],
             fetching: false,
@@ -273,6 +308,13 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 points: [],
             },
             latestApproximatedPoints: [],
+            latestRequest: null,
+            hideMessage: null,
+        };
+
+        this.pointAssistantSession = {
+            id: null,
+            finishRequested: false,
             latestRequest: null,
             hideMessage: null,
         };
@@ -295,13 +337,51 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     public componentDidUpdate(prevProps: Props, prevState: State): void {
         const {
             isActivated, defaultApproxPolyAccuracy, canvasInstance, states, toolsBlockerState,
+            interactors, pointAssistants,
         } = this.props;
-        const { approxPolyAccuracy, mode, activeTracker } = this.state;
+        const {
+            approxPolyAccuracy, mode, activeTracker, activeInteractor, activePointAssistant,
+        } = this.state;
 
         if (prevProps.states !== states || prevState.activeTracker !== activeTracker) {
             this.setState({
                 portals: this.collectTrackerPortals(),
             });
+        }
+
+        if (
+            prevProps.interactors !== interactors ||
+            prevProps.pointAssistants !== pointAssistants
+        ) {
+            const nextState: Partial<State> = {};
+
+            if (!activeInteractor && interactors.length) {
+                nextState.activeInteractor = interactors[0];
+            } else if (
+                activeInteractor &&
+                !interactors.some((interactor) => interactor.id === activeInteractor.id)
+            ) {
+                nextState.activeInteractor = interactors[0] || null;
+            }
+
+            if (!activePointAssistant && pointAssistants.length) {
+                nextState.activePointAssistant = pointAssistants[0];
+                nextState.pointAssistantPromptMode = pointAssistants[0].supportedPromptTypes.includes('point') ?
+                    'point' :
+                    'box';
+            } else if (
+                activePointAssistant &&
+                !pointAssistants.some((interactor) => interactor.id === activePointAssistant.id)
+            ) {
+                nextState.activePointAssistant = pointAssistants[0] || null;
+                nextState.pointAssistantPromptMode = pointAssistants[0]?.supportedPromptTypes.includes('point') ?
+                    'point' :
+                    'box';
+            }
+
+            if (Object.keys(nextState).length) {
+                this.setState(nextState as Pick<State, keyof State>);
+            }
         }
 
         if (prevProps.isActivated && !isActivated) {
@@ -310,6 +390,18 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             if (this.interaction.hideMessage) {
                 this.interaction.hideMessage();
                 this.interaction.hideMessage = null;
+            }
+            if (
+                this.pointAssistantSession.id ||
+                this.state.pointAssistantPromptPoints.length ||
+                this.state.pointAssistantPreviewPoints.length
+            ) {
+                this.resetPointAssistantSession();
+                this.setState({
+                    fetching: false,
+                    pointAssistantPromptPoints: [],
+                    pointAssistantPreviewPoints: [],
+                });
             }
         } else if (!prevProps.isActivated && isActivated) {
             // reset flags when start interaction/tracking
@@ -326,6 +418,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             this.setState({
                 approxPolyAccuracy: defaultApproxPolyAccuracy,
                 pointsReceived: false,
+                pointAssistantPromptPoints: [],
+                pointAssistantPreviewPoints: [],
             });
             window.addEventListener('contextmenu', this.contextmenuDisabler);
         }
@@ -333,9 +427,15 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         if (
             prevProps.toolsBlockerState.algorithmsLocked &&
             !toolsBlockerState.algorithmsLocked &&
-            isActivated && mode === 'interaction' && this.interaction.latestPostponedEvent
+            isActivated &&
+            ['interaction', 'point-assistance'].includes(mode) &&
+            this.interaction.latestPostponedEvent
         ) {
-            this.onInteraction(this.interaction.latestPostponedEvent);
+            if (mode === 'interaction') {
+                this.onInteraction(this.interaction.latestPostponedEvent);
+            } else {
+                this.onPointAssistant(this.interaction.latestPostponedEvent);
+            }
         }
 
         if (prevState.approxPolyAccuracy !== approxPolyAccuracy) {
@@ -352,6 +452,18 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         });
                     });
             }
+        }
+
+        if (
+            prevState.mode === 'point-assistance' &&
+            mode !== 'point-assistance' &&
+            (
+                prevState.pointAssistantPromptPoints.length ||
+                prevState.pointAssistantPreviewPoints.length ||
+                this.pointAssistantSession.id
+            )
+        ) {
+            this.clearPointAssistantState();
         }
 
         this.checkTrackedStates(prevProps);
@@ -426,14 +538,20 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     response.points = await this.receivePointsFromMask(response.mask, left, top);
                 }
 
+                const mask = response.mask;
+                const firstMaskRow = mask?.[0];
+                if (!mask?.length || !firstMaskRow?.length) {
+                    throw new Error('Interactor response does not include a valid mask');
+                }
+
                 // approximation with cv.approxPolyDP
                 const approximated = await this.approximateResponsePoints(response.points as [number, number][]);
-                const rle = core.utils.mask2Rle(response.mask.flat());
+                const rle = core.utils.mask2Rle(mask.flat());
                 if (response.bounds) {
                     rle.push(...response.bounds);
                 } else {
-                    const height = response.mask.length;
-                    const width = response.mask[0].length;
+                    const height = mask.length;
+                    const width = firstMaskRow.length;
                     rle.push(0, 0, width - 1, height - 1);
                 }
 
@@ -574,17 +692,273 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         }
     };
 
+    private resetPointAssistantSession = (): void => {
+        if (this.pointAssistantSession.hideMessage) {
+            this.pointAssistantSession.hideMessage();
+        }
+
+        this.pointAssistantSession = {
+            id: null,
+            finishRequested: false,
+            latestRequest: null,
+            hideMessage: null,
+        };
+    };
+
+    private clearPointAssistantState = (): void => {
+        this.resetPointAssistantSession();
+        this.setState({
+            fetching: false,
+            pointAssistantPromptPoints: [],
+            pointAssistantPreviewPoints: [],
+        });
+    };
+
+    private commitPointAssistantPreview = async (
+        previewPointsOverride?: [number, number][],
+    ): Promise<void> => {
+        const {
+            frame, labels, curZOrder, createAnnotations,
+        } = this.props;
+        const { activeLabelID } = this.state;
+        const pointAssistantPreviewPoints = previewPointsOverride || this.state.pointAssistantPreviewPoints;
+
+        const label = labels.find((_label) => _label.id === activeLabelID);
+        if (!label || !pointAssistantPreviewPoints.length) {
+            this.clearPointAssistantState();
+            return;
+        }
+
+        const pointStates = pointAssistantPreviewPoints.map((point) => new core.classes.ObjectState({
+            frame,
+            objectType: ObjectType.SHAPE,
+            source: core.enums.Source.SEMI_AUTO,
+            label,
+            shapeType: ShapeType.POINTS,
+            points: [...point],
+            occluded: false,
+            zOrder: curZOrder,
+        }));
+
+        await createAnnotations(pointStates);
+        this.clearPointAssistantState();
+    };
+
+    private maybeCommitPointAssistantPreview = async (): Promise<void> => {
+        if (
+            !this.pointAssistantSession.finishRequested ||
+            this.state.fetching ||
+            this.pointAssistantSession.latestRequest
+        ) {
+            return;
+        }
+
+        await this.commitPointAssistantPreview();
+    };
+
+    private enablePointAssistantInteraction = (): void => {
+        const { canvasInstance } = this.props;
+        const { pointAssistantPromptMode } = this.state;
+
+        canvasInstance.interact({
+            enabled: true,
+            shapeType: pointAssistantPromptMode === 'box' ? 'rectangle' : 'points',
+            ...(pointAssistantPromptMode === 'point' ? {
+                minPosVertices: 1,
+                minNegVertices: -1,
+            } : {}),
+        });
+    };
+
+    private runPointAssistantRequest = async (sessionId: string): Promise<void> => {
+        const { jobInstance, isActivated } = this.props;
+        const { mode, fetching } = this.state;
+
+        if (
+            this.pointAssistantSession.id !== sessionId ||
+            !this.pointAssistantSession.latestRequest ||
+            fetching
+        ) {
+            return;
+        }
+
+        const { pointAssistant, data, restartInteraction } = this.pointAssistantSession.latestRequest;
+        this.pointAssistantSession.latestRequest = null;
+
+        try {
+            if (this.pointAssistantSession.hideMessage) {
+                this.pointAssistantSession.hideMessage();
+            }
+
+            this.pointAssistantSession.hideMessage = message.loading({
+                content: `Waiting for a response from ${pointAssistant.name}`,
+                duration: 0,
+                className: 'cvat-tracking-notice',
+            });
+            this.setState({ fetching: true });
+            const response = await core.lambda.call(jobInstance.taskId, pointAssistant, data) as PointProposalResults;
+
+            if (this.pointAssistantSession.id !== sessionId) {
+                return;
+            }
+
+            const previewPoints = (response.points || []).filter((point) => (
+                Array.isArray(point) &&
+                point.length === 2 &&
+                Number.isFinite(point[0]) &&
+                Number.isFinite(point[1])
+            )) as [number, number][];
+
+            this.setState({ pointAssistantPreviewPoints: previewPoints });
+
+            if (this.pointAssistantSession.finishRequested && !this.pointAssistantSession.latestRequest) {
+                await this.commitPointAssistantPreview(previewPoints);
+                return;
+            }
+        } catch (error: any) {
+            if (this.pointAssistantSession.id === sessionId) {
+                this.setState({ pointAssistantPreviewPoints: [] });
+                notification.error({
+                    description: <CVATMarkdown>{error.message}</CVATMarkdown>,
+                    message: 'Point assistance error occurred',
+                    duration: null,
+                });
+            }
+
+            if (this.pointAssistantSession.finishRequested && !this.pointAssistantSession.latestRequest) {
+                await this.commitPointAssistantPreview([]);
+                return;
+            }
+        } finally {
+            if (this.pointAssistantSession.id === sessionId && this.pointAssistantSession.hideMessage) {
+                this.pointAssistantSession.hideMessage();
+                this.pointAssistantSession.hideMessage = null;
+            }
+
+            if (this.pointAssistantSession.id === sessionId) {
+                this.setState({ fetching: false });
+            }
+        }
+
+        if (this.pointAssistantSession.id !== sessionId) {
+            return;
+        }
+
+        if (this.pointAssistantSession.latestRequest) {
+            setTimeout(() => this.runPointAssistantRequest(sessionId));
+            return;
+        }
+
+        if (
+            restartInteraction &&
+            isActivated &&
+            mode === 'point-assistance'
+        ) {
+            this.enablePointAssistantInteraction();
+        }
+    };
+
+    private onPointAssistant = async (e: Event): Promise<void> => {
+        const { isActivated, jobInstance, frame } = this.props;
+        const {
+            activePointAssistant, pointAssistantPromptMode,
+        } = this.state;
+
+        if (!isActivated || !activePointAssistant || !this.pointAssistantSession.id) {
+            return;
+        }
+
+        const { shapesUpdated, shapes, isDone } = (e as CustomEvent).detail;
+        if (!Array.isArray(shapes)) {
+            if (isDone) {
+                this.pointAssistantSession.finishRequested = true;
+                await this.maybeCommitPointAssistantPreview();
+            }
+            return;
+        }
+
+        const positivePoints = convertShapesForInteractor(shapes, 'points', 0) as [number, number][];
+        const promptBox = convertShapesForInteractor(shapes, 'rectangle', 0);
+        const sessionId = this.pointAssistantSession.id as string;
+        const textPrompt = this.state.pointAssistantTextPrompt.trim();
+
+        if (pointAssistantPromptMode === 'point') {
+            this.setState({ pointAssistantPromptPoints: positivePoints });
+
+            if (shapesUpdated && !positivePoints.length) {
+                if (this.pointAssistantSession.hideMessage) {
+                    this.pointAssistantSession.hideMessage();
+                    this.pointAssistantSession.hideMessage = null;
+                }
+                this.pointAssistantSession.id = lodash.uniqueId('point_assistant_');
+                this.pointAssistantSession.finishRequested = false;
+                this.pointAssistantSession.latestRequest = null;
+                this.setState({ pointAssistantPreviewPoints: [] });
+            } else if (shapesUpdated && positivePoints.length) {
+                this.pointAssistantSession.latestRequest = {
+                    pointAssistant: activePointAssistant,
+                    data: {
+                        frame,
+                        job: jobInstance.id,
+                        ...(textPrompt ? { prompt: textPrompt } : {}),
+                        pos_points: positivePoints,
+                        neg_points: [],
+                        obj_bbox: [],
+                    },
+                    restartInteraction: false,
+                };
+                this.runPointAssistantRequest(sessionId);
+            }
+
+            if (isDone) {
+                this.pointAssistantSession.finishRequested = true;
+                await this.maybeCommitPointAssistantPreview();
+            }
+
+            return;
+        }
+
+        this.setState({ pointAssistantPromptPoints: [] });
+
+        if (shapesUpdated && promptBox.length) {
+            this.pointAssistantSession.latestRequest = {
+                pointAssistant: activePointAssistant,
+                data: {
+                    frame,
+                    job: jobInstance.id,
+                    ...(textPrompt ? { prompt: textPrompt } : {}),
+                    pos_points: [],
+                    neg_points: [],
+                    obj_bbox: promptBox,
+                },
+                restartInteraction: true,
+            };
+            this.runPointAssistantRequest(sessionId);
+        }
+
+        if (isDone && !shapesUpdated) {
+            this.pointAssistantSession.finishRequested = true;
+            await this.maybeCommitPointAssistantPreview();
+        }
+    };
+
     private interactionListener = async (e: Event): Promise<void> => {
         const { toolsBlockerState } = this.props;
         const { mode } = this.state;
 
-        if (mode === 'interaction') {
+        if (mode === 'interaction' || mode === 'point-assistance') {
             if (toolsBlockerState.algorithmsLocked) {
                 this.interaction.latestPostponedEvent = e;
                 return;
             }
+        }
 
+        if (mode === 'interaction') {
             await this.onInteraction(e);
+        }
+
+        if (mode === 'point-assistance') {
+            await this.onPointAssistant(e);
         }
 
         if (mode === 'tracking') {
@@ -594,7 +968,13 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private setActiveInteractor = (value: string): void => {
         const { interactors } = this.props;
-        const [interactor] = interactors.filter((_interactor: MLModel) => _interactor.id === value);
+        const [interactor] = interactors.filter(
+            (_interactor: MLModel) => String(_interactor.id) === value,
+        );
+
+        if (!interactor) {
+            return;
+        }
 
         if (interactor.version < MIN_SUPPORTED_INTERACTOR_VERSION) {
             notification.warning({
@@ -608,10 +988,28 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         });
     };
 
+    private setActivePointAssistant = (value: string): void => {
+        const { pointAssistants } = this.props;
+        const [pointAssistant] = pointAssistants.filter(
+            (_pointAssistant: MLModel) => String(_pointAssistant.id) === value,
+        );
+
+        if (!pointAssistant) {
+            return;
+        }
+
+        this.setState({
+            activePointAssistant: pointAssistant,
+            pointAssistantPromptMode: pointAssistant.supportedPromptTypes.includes('point') ? 'point' : 'box',
+            pointAssistantPromptPoints: [],
+            pointAssistantPreviewPoints: [],
+        });
+    };
+
     private setActiveTracker = (value: string): void => {
         const { trackers } = this.props;
         this.setState({
-            activeTracker: trackers.filter((tracker: MLModel) => tracker.id === value)[0],
+            activeTracker: trackers.filter((tracker: MLModel) => String(tracker.id) === value)[0],
         });
     };
 
@@ -992,6 +1390,218 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         );
     }
 
+    private renderPointAssistantPreview(): React.ReactPortal | null {
+        const { canvasInstance } = this.props;
+        const { pointAssistantPreviewPoints } = this.state;
+
+        const target = canvasInstance.html().querySelector('#cvat_canvas_content');
+        if (!target || !pointAssistantPreviewPoints.length) {
+            return null;
+        }
+
+        const { offset, scale } = canvasInstance.geometry;
+        const radius = 6 / scale;
+        const strokeWidth = 2 / scale;
+
+        return ReactDOM.createPortal(
+            (
+                <g id='cvat_canvas_point_assistant_preview' style={{ pointerEvents: 'none' }}>
+                    {pointAssistantPreviewPoints.map((point, idx) => (
+                        <circle
+                            key={`${point[0]}-${point[1]}-${idx}`}
+                            cx={point[0] + offset}
+                            cy={point[1] + offset}
+                            r={radius}
+                            fill='#ffec3d'
+                            stroke='#262626'
+                            strokeWidth={strokeWidth}
+                            opacity='0.95'
+                        />
+                    ))}
+                </g>
+            ),
+            target,
+        );
+    }
+
+    private renderPointAssistantBlock(): JSX.Element {
+        const {
+            canvasInstance, labels, onInteractionStart, pointAssistants, isActivated,
+        } = this.props;
+        const {
+            activePointAssistant,
+            activeLabelID,
+            fetching,
+            pointAssistantTextPrompt,
+            pointAssistantPromptMode,
+            pointAssistantPromptPoints,
+            pointAssistantPreviewPoints,
+            mode,
+        } = this.state;
+
+        if (!pointAssistants.length) {
+            return (
+                <Row justify='center' align='middle' style={{ marginTop: '5px' }}>
+                    <Col>
+                        <Text type='warning' className='cvat-text-color'>
+                            No available point assistants found
+                        </Text>
+                    </Col>
+                </Row>
+            );
+        }
+
+        const selectedPointAssistant = activePointAssistant || pointAssistants[0];
+        const supportedPromptTypes = selectedPointAssistant?.supportedPromptTypes.length ?
+            selectedPointAssistant.supportedPromptTypes :
+            ['point'];
+        const isPointAssistantSessionActive = isActivated &&
+            mode === 'point-assistance' &&
+            !!this.pointAssistantSession.id;
+
+        return (
+            <>
+                <Row justify='start'>
+                    <Col>
+                        <Text className='cvat-text-color'>Point assistant</Text>
+                    </Col>
+                </Row>
+                <Row align='middle' justify='space-between'>
+                    <Col span={22}>
+                        <Select
+                            style={{ width: '100%' }}
+                            value={selectedPointAssistant ? String(selectedPointAssistant.id) : undefined}
+                            disabled={isPointAssistantSessionActive}
+                            onChange={this.setActivePointAssistant}
+                        >
+                            {pointAssistants.map(
+                                (pointAssistant: MLModel): JSX.Element => (
+                                    <Select.Option
+                                        value={String(pointAssistant.id)}
+                                        title={pointAssistant.description}
+                                        key={pointAssistant.id}
+                                    >
+                                        {pointAssistant.name}
+                                    </Select.Option>
+                                ),
+                            )}
+                        </Select>
+                    </Col>
+                    <Col span={2} className='cvat-interactors-tips-icon-container'>
+                        <Popover
+                            destroyTooltipOnHide
+                            content={(
+                                <ToolsTooltips
+                                    name={selectedPointAssistant?.name}
+                                    withNegativePoints={false}
+                                    {...(selectedPointAssistant?.tip || {})}
+                                />
+                            )}
+                        >
+                            <QuestionCircleOutlined />
+                        </Popover>
+                    </Col>
+                </Row>
+                <Row justify='start' style={{ marginTop: '10px' }}>
+                    <Col>
+                        <Text className='cvat-text-color'>Prompt type</Text>
+                    </Col>
+                </Row>
+                <Row align='middle' justify='center'>
+                    <Col span={24}>
+                        <Select
+                            style={{ width: '100%' }}
+                            value={pointAssistantPromptMode}
+                            disabled={isPointAssistantSessionActive}
+                            onChange={(value: 'point' | 'box') => {
+                                this.setState({
+                                    pointAssistantPromptMode: value,
+                                    pointAssistantPromptPoints: [],
+                                    pointAssistantPreviewPoints: [],
+                                });
+                            }}
+                        >
+                            {supportedPromptTypes.includes('point') && (
+                                <Select.Option value='point'>Points</Select.Option>
+                            )}
+                            {supportedPromptTypes.includes('box') && (
+                                <Select.Option value='box'>Bounding box</Select.Option>
+                            )}
+                        </Select>
+                    </Col>
+                </Row>
+                <Row justify='start' style={{ marginTop: '10px' }}>
+                    <Col>
+                        <Text className='cvat-text-color'>Text prompt</Text>
+                    </Col>
+                </Row>
+                <Row align='middle' justify='center'>
+                    <Col span={24}>
+                        <Input
+                            value={pointAssistantTextPrompt}
+                            allowClear
+                            placeholder='Optional English prompt. Leave empty to use the model default.'
+                            onChange={(event) => {
+                                this.setState({
+                                    pointAssistantTextPrompt: event.target.value,
+                                });
+                            }}
+                        />
+                    </Col>
+                </Row>
+                {isPointAssistantSessionActive && (
+                    <Row justify='start' style={{ marginTop: '10px' }}>
+                        <Col>
+                            <Text className='cvat-text-color'>
+                                {fetching && <LoadingOutlined style={{ marginRight: '8px' }} />}
+                                {pointAssistantPromptMode === 'point' ? (
+                                    <>
+                                        Prompt points: {pointAssistantPromptPoints.length}. Preview points: {pointAssistantPreviewPoints.length}.
+                                    </>
+                                ) : (
+                                    <>Preview points: {pointAssistantPreviewPoints.length}.</>
+                                )} Press the same button again to finish.
+                            </Text>
+                        </Col>
+                    </Row>
+                )}
+                <Row align='middle' justify='end' style={{ marginTop: '10px' }}>
+                    <Col>
+                        <Button
+                            type='primary'
+                            disabled={!isPointAssistantSessionActive &&
+                                (!selectedPointAssistant || !activeLabelID || !labels.length)}
+                            onClick={() => {
+                                if (isPointAssistantSessionActive) {
+                                    this.pointAssistantSession.finishRequested = true;
+                                    canvasInstance.interact({ enabled: false });
+                                    return;
+                                }
+
+                                if (!selectedPointAssistant || !activeLabelID || !labels.length) {
+                                    return;
+                                }
+
+                                this.resetPointAssistantSession();
+                                this.pointAssistantSession.id = lodash.uniqueId('point_assistant_');
+                                this.setState({
+                                    mode: 'point-assistance',
+                                    pointAssistantPromptPoints: [],
+                                    pointAssistantPreviewPoints: [],
+                                });
+                                canvasInstance.cancel();
+                                this.enablePointAssistantInteraction();
+                                onInteractionStart(selectedPointAssistant, activeLabelID, {});
+                            }}
+                        >
+                            {isPointAssistantSessionActive ? 'Finish' : 'Run'}
+                        </Button>
+                    </Col>
+                </Row>
+            </>
+        );
+    }
+
     private renderTrackerBlock(): JSX.Element {
         const {
             canvasInstance, jobInstance, frame, onInteractionStart,
@@ -1012,6 +1622,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             );
         }
 
+        const selectedTracker = activeTracker || supportedTrackers[0];
+
         return (
             <>
                 <Row justify='start'>
@@ -1023,12 +1635,16 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     <Col span={24}>
                         <Select
                             style={{ width: '100%' }}
-                            defaultValue={supportedTrackers[0].name}
+                            value={selectedTracker ? String(selectedTracker.id) : undefined}
                             onChange={this.setActiveTracker}
                         >
                             {supportedTrackers.map(
                                 (tracker: MLModel): JSX.Element => (
-                                    <Select.Option value={tracker.id} title={tracker.description} key={tracker.id}>
+                                    <Select.Option
+                                        value={String(tracker.id)}
+                                        title={tracker.description}
+                                        key={tracker.id}
+                                    >
                                         {tracker.name}
                                     </Select.Option>
                                 ),
@@ -1042,9 +1658,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                             type='primary'
                             loading={fetching}
                             className='cvat-tools-track-button'
-                            disabled={!activeTracker || fetching || frame === jobInstance.stopFrame}
+                            disabled={!selectedTracker || fetching || frame === jobInstance.stopFrame}
                             onClick={() => {
-                                if (activeTracker && activeLabelID) {
+                                if (selectedTracker && activeLabelID) {
                                     this.setState({ mode: 'tracking' });
 
                                     canvasInstance.cancel();
@@ -1054,7 +1670,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                     });
 
                                     const { onSwitchToolsBlockerState } = this.props;
-                                    onInteractionStart(activeTracker, activeLabelID, {});
+                                    onInteractionStart(selectedTracker, activeLabelID, {});
                                     onSwitchToolsBlockerState({ buttonVisible: false });
                                 }
                             }}
@@ -1069,7 +1685,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private renderInteractorBlock(): JSX.Element {
         const {
-            interactors, canvasInstance, labels, onInteractionStart, interactorExtras,
+            canvasInstance, labels, onInteractionStart, interactorExtras, interactors,
         } = this.props;
         const {
             activeInteractor, activeLabelID, fetching, startInteractingWithBox, convertMasksToPolygons,
@@ -1087,8 +1703,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             );
         }
 
-        const minNegVertices = activeInteractor?.params?.canvas?.minNegVertices ?? -1;
-        const renderStartWithBox = activeInteractor?.params?.canvas?.startWithBoxOptional ?? false;
+        const selectedInteractor = activeInteractor || interactors[0];
+        const minNegVertices = selectedInteractor?.params?.canvas?.minNegVertices ?? -1;
+        const renderStartWithBox = selectedInteractor?.params?.canvas?.startWithBoxOptional ?? false;
 
         const renderedInteractorExtras = interactorExtras
             .sort((a, b) => a.data.weight - b.data.weight)
@@ -1108,13 +1725,13 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     <Col span={22}>
                         <Select
                             style={{ width: '100%' }}
-                            defaultValue={interactors[0].name}
+                            value={selectedInteractor ? String(selectedInteractor.id) : undefined}
                             onChange={this.setActiveInteractor}
                         >
                             {interactors.map(
                                 (interactor: MLModel): JSX.Element => (
                                     <Select.Option
-                                        value={interactor.id}
+                                        value={String(interactor.id)}
                                         title={interactor.description}
                                         key={interactor.id}
                                     >
@@ -1129,9 +1746,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                             destroyTooltipOnHide
                             content={(
                                 <ToolsTooltips
-                                    name={activeInteractor?.name}
+                                    name={selectedInteractor?.name}
                                     withNegativePoints={minNegVertices >= 0}
-                                    {...(activeInteractor?.tip || {})}
+                                    {...(selectedInteractor?.tip || {})}
                                 />
                             )}
                         >
@@ -1169,25 +1786,25 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                             type='primary'
                             loading={fetching}
                             className='cvat-tools-interact-button'
-                            disabled={!activeInteractor ||
+                            disabled={!selectedInteractor ||
                                 fetching ||
-                                activeInteractor.version < MIN_SUPPORTED_INTERACTOR_VERSION}
+                                selectedInteractor.version < MIN_SUPPORTED_INTERACTOR_VERSION}
                             onClick={() => {
-                                if (activeInteractor && activeLabelID && labels.length) {
+                                if (selectedInteractor && activeLabelID && labels.length) {
                                     this.setState({ mode: 'interaction' });
                                     canvasInstance.cancel();
                                     const interactorParameters = {
-                                        ...omit(activeInteractor.params.canvas, 'startWithBoxOptional'),
+                                        ...omit(selectedInteractor.params.canvas, 'startWithBoxOptional'),
                                         // replace 'optional' with true or false depending on user specified setting
-                                        ...(activeInteractor.params.canvas.startWithBoxOptional ? {
+                                        ...(selectedInteractor.params.canvas.startWithBoxOptional ? {
                                             startWithBox: startInteractingWithBox,
                                         } : {
-                                            startWithBox: activeInteractor.params.canvas.startWithBox,
+                                            startWithBox: selectedInteractor.params.canvas.startWithBox,
                                         }),
                                     };
 
                                     canvasInstance.interact({ shapeType: 'points', enabled: true, ...interactorParameters });
-                                    onInteractionStart(activeInteractor, activeLabelID, interactorParameters);
+                                    onInteractionStart(selectedInteractor, activeLabelID, interactorParameters);
                                 }
                             }}
                         >
@@ -1302,6 +1919,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     }
 
     private renderPopoverContent(): JSX.Element {
+        const { interactors, pointAssistants } = this.props;
+
         return (
             <div className='cvat-tools-control-popover-content'>
                 <Row justify='start'>
@@ -1314,29 +1933,43 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 <Tabs
                     type='card'
                     tabBarGutter={8}
-                    items={[{
-                        key: 'interactors',
-                        label: 'Interactors',
-                        children: (
-                            <>
-                                {this.renderLabelBlock()}
-                                {this.renderInteractorBlock()}
-                            </>
-                        ),
-                    }, {
-                        key: 'detectors',
-                        label: 'Detectors',
-                        children: this.renderDetectorBlock(),
-                    }, {
-                        key: 'trackers',
-                        label: 'Trackers',
-                        children: (
-                            <>
-                                {this.renderLabelBlock()}
-                                {this.renderTrackerBlock()}
-                            </>
-                        ),
-                    }]}
+                    items={[
+                        ...(interactors.length ? [{
+                            key: 'interactors',
+                            label: 'Interactors',
+                            children: (
+                                <>
+                                    {this.renderLabelBlock()}
+                                    {this.renderInteractorBlock()}
+                                </>
+                            ),
+                        }] : []),
+                        ...(pointAssistants.length ? [{
+                            key: 'point-assistants',
+                            label: 'Point Assist',
+                            children: (
+                                <>
+                                    {this.renderLabelBlock()}
+                                    {this.renderPointAssistantBlock()}
+                                </>
+                            ),
+                        }] : []),
+                        {
+                            key: 'detectors',
+                            label: 'Detectors',
+                            children: this.renderDetectorBlock(),
+                        },
+                        {
+                            key: 'trackers',
+                            label: 'Trackers',
+                            children: (
+                                <>
+                                    {this.renderLabelBlock()}
+                                    {this.renderTrackerBlock()}
+                                </>
+                            ),
+                        },
+                    ]}
                 />
             </div>
         );
@@ -1344,13 +1977,19 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     public render(): JSX.Element | null {
         const {
-            interactors, detectors, trackers, isActivated, canvasInstance, labels, frameIsDeleted,
+            interactors, pointAssistants, detectors, trackers,
+            isActivated, canvasInstance, labels, frameIsDeleted,
         } = this.props;
         const {
-            fetching, approxPolyAccuracy, pointsReceived, mode, portals, convertMasksToPolygons,
+            fetching,
+            approxPolyAccuracy,
+            pointsReceived,
+            mode,
+            portals,
+            convertMasksToPolygons,
         } = this.state;
 
-        if (![...interactors, ...detectors, ...trackers].length) return null;
+        if (![...interactors, ...pointAssistants, ...detectors, ...trackers].length) return null;
 
         const dynamicPopoverProps = isActivated ?
             {
@@ -1398,6 +2037,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             </Modal>
         ) : null;
 
+        const pointAssistantPreview = this.renderPointAssistantPreview();
+
         return showAnyContent ? (
             <>
                 <CustomPopover {...dynamicPopoverProps} placement='right' content={this.renderPopoverContent()}>
@@ -1406,6 +2047,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 {interactionContent}
                 {detectionContent}
                 {portals}
+                {pointAssistantPreview}
             </>
         ) : (
             <Icon className=' cvat-tools-control cvat-disabled-canvas-control' component={AIToolsIcon} />

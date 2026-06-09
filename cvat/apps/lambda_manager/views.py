@@ -55,6 +55,10 @@ from cvat.apps.iam.filters import ORGANIZATION_OPEN_API_PARAMETERS
 from cvat.apps.lambda_manager.models import FunctionKind
 from cvat.apps.lambda_manager.permissions import LambdaPermission
 from cvat.apps.lambda_manager.rq import LambdaRQMeta
+from cvat.apps.lambda_manager.sam_embedding_cache import (
+    SAM_EMBEDDING_FUNCTION_ID,
+    SAMEmbeddingCache,
+)
 from cvat.apps.lambda_manager.serializers import (
     FunctionCallRequestSerializer,
     FunctionCallSerializer,
@@ -63,6 +67,18 @@ from cvat.apps.lambda_manager.signals import interactive_function_call_signal
 from cvat.utils.http import make_requests_session
 
 slogger = ServerLogManager(__name__)
+
+RFDETR_BUDSPORE_FUNCTION_ID = "pth-yview-rfdetr-budspore"
+_sam_embedding_cache_version: int | None = None
+
+
+def _get_sam_embedding_cache_version(gateway: "LambdaGateway") -> int:
+    global _sam_embedding_cache_version
+
+    if _sam_embedding_cache_version is None:
+        _sam_embedding_cache_version = gateway.get(SAM_EMBEDDING_FUNCTION_ID).version
+
+    return _sam_embedding_cache_version
 
 
 class LambdaGateway:
@@ -245,6 +261,13 @@ class LambdaFunction:
         self.animated_gif = meta_anno.get("animated_gif", "")
         self.version = int(meta_anno.get("version", "1"))
         self.help_message = meta_anno.get("help_message", "")
+        self.interactive_type = meta_anno.get("interactive_type", "")
+        self.supported_prompt_types = [
+            stripped
+            for prompt_type in meta_anno.get("supported_prompt_types", "").split(",")
+            for stripped in [prompt_type.strip()]
+            if stripped
+        ]
         self.gateway = gateway
 
         if "supported_shape_types" in meta_anno:
@@ -284,6 +307,10 @@ class LambdaFunction:
                     "animated_gif": self.animated_gif,
                 }
             )
+            if self.interactive_type:
+                response["interactive_type"] = self.interactive_type
+            if self.supported_prompt_types:
+                response["supported_prompt_types"] = self.supported_prompt_types
         elif self.kind is FunctionKind.TRACKER:
             response.update(
                 {
@@ -465,17 +492,54 @@ class LambdaFunction:
                         f"The {desc} is outside the job range", code=status.HTTP_400_BAD_REQUEST
                     )
 
+        sam_embedding_cache_frame = None
+        sam_embedding_cache_blob = None
+
         if self.kind == FunctionKind.DETECTOR:
-            payload.update({"image": self._get_image(db_task, mandatory_arg("frame"))})
+            frame = mandatory_arg("frame")
+            payload.update({"image": self._get_image(db_task, frame)})
+            if self.id == RFDETR_BUDSPORE_FUNCTION_ID:
+                try:
+                    rfdetr_sam_embedding_blob = SAMEmbeddingCache.load_blob(
+                        db_task,
+                        frame,
+                        function_id=SAM_EMBEDDING_FUNCTION_ID,
+                        version=_get_sam_embedding_cache_version(self.gateway),
+                    )
+                except Exception:
+                    slogger.glob.warning(
+                        "Failed to load cached SAM embedding for RF-DETR task %s frame %s",
+                        db_task.id,
+                        frame,
+                        exc_info=True,
+                    )
+                    rfdetr_sam_embedding_blob = None
+
+                if rfdetr_sam_embedding_blob is not None:
+                    payload["sam_embedding"] = rfdetr_sam_embedding_blob
         elif self.kind == FunctionKind.INTERACTOR:
-            payload.update(
-                {
-                    "image": self._get_image(db_task, mandatory_arg("frame")),
-                    "pos_points": mandatory_arg("pos_points"),
-                    "neg_points": mandatory_arg("neg_points"),
-                    "obj_bbox": data.get("obj_bbox", None),
-                }
-            )
+            frame = mandatory_arg("frame")
+            pos_points = mandatory_arg("pos_points")
+            neg_points = mandatory_arg("neg_points")
+
+            if self.id == SAM_EMBEDDING_FUNCTION_ID:
+                sam_embedding_cache_frame = frame
+                sam_embedding_cache_blob = SAMEmbeddingCache.load_blob(
+                    db_task,
+                    frame,
+                    function_id=self.id,
+                    version=self.version,
+                )
+
+            if sam_embedding_cache_blob is None:
+                payload.update(
+                    {
+                        "image": self._get_image(db_task, frame),
+                        "pos_points": pos_points,
+                        "neg_points": neg_points,
+                        "obj_bbox": data.get("obj_bbox", None),
+                    }
+                )
         elif self.kind == FunctionKind.REID:
             payload.update(
                 {
@@ -557,7 +621,18 @@ class LambdaFunction:
         if is_interactive and request:
             interactive_function_call_signal.send(sender=self, request=request)
 
-        response = self.gateway.invoke(self, payload)
+        if sam_embedding_cache_blob is not None:
+            response = {"blob": sam_embedding_cache_blob}
+        else:
+            response = self.gateway.invoke(self, payload)
+            if sam_embedding_cache_frame is not None:
+                SAMEmbeddingCache.store_response(
+                    db_task,
+                    sam_embedding_cache_frame,
+                    response,
+                    function_id=self.id,
+                    version=self.version,
+                )
 
         def check_attr_value(value, db_attr):
             if db_attr is None:

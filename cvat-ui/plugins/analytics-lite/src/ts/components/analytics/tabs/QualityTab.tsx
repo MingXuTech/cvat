@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Card from 'antd/lib/card';
@@ -72,6 +72,7 @@ export default function QualityTab(
     const [frameGallery, setFrameGallery] = useState<FrameGalleryState | null>(null);
     const [tileOverlay, setTileOverlay] = useState<TileOverlayState>({ loading: false, dsShapes: [], gtShapes: [], error: null });
     const [tileImageSize, setTileImageSize] = useState<{ w: number; h: number } | null>(null);
+    const tilePreviewNonceRef = useRef(0);
     // We don't show raw report data/conflicts blocks in UI anymore.
     // Conflicts are loaded lazily per job report for the "错误帧定位" table below.
     const [jobAssignees, setJobAssignees] = useState<Record<number, string | null>>({});
@@ -116,6 +117,11 @@ export default function QualityTab(
                 targetLastUpdatedMs: getTargetLastUpdatedMs(r),
             };
         });
+    };
+
+    const openTilePreview = (preview: Omit<TilePreview, 'nonce'>): void => {
+        tilePreviewNonceRef.current += 1;
+        setTilePreview({ ...preview, nonce: tilePreviewNonceRef.current });
     };
 
 
@@ -1693,13 +1699,13 @@ export default function QualityTab(
                 orgSlug={core?.config?.organization?.organizationSlug ?? null}
                 ensureValidationContext={ensureValidationContext}
                 loadConflictsForReport={loadConflictsForReport}
-                onTilePreview={setTilePreview}
+                onTilePreview={openTilePreview}
             />
 
             <FrameGalleryModal
                 frameGallery={frameGallery}
                 onClose={() => setFrameGallery(null)}
-                onSelect={(m) => setTilePreview({
+                onSelect={(m) => openTilePreview({
                     src: m.preview,
                     title: `Frame ${m.frame}`,
                     tags: m.tags || [],

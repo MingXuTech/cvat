@@ -1,0 +1,59 @@
+metadata:
+  name: pth-yview-countgd-fewshot
+  namespace: cvat
+  annotations:
+    name: CountGD Point Proposer
+    version: 2
+    type: interactor
+    interactive_type: point_proposer
+    supported_prompt_types: point, box
+    min_pos_points: 1
+    min_neg_points: -1
+    help_message: Click one exemplar center or draw one exemplar box to propose centers of similar objects
+    spec: |
+      [
+        { "id": 0, "name": "bacteria", "type": "points" }
+      ]
+
+spec:
+  description: CountGD point proposer for CVAT interactive point-assisted annotation
+  runtime: 'python:3.10'
+  handler: main:handler
+  eventTimeout: 180s
+  env:
+    - name: COUNTGD_UPSTREAM_URL
+      value: http://172.20.2.148:8000/api/count_image
+    - name: COUNTGD_REQUEST_TIMEOUT
+      value: "180"
+    - name: COUNTGD_CAPTION
+      value: bacteria
+    - name: COUNTGD_EXEMPLAR_POINTS
+      value: ""
+    - name: COUNTGD_EXEMPLAR_BOXES
+      value: ""
+
+  build:
+    image: cvat.pth.yview.countgd:latest-gpu
+    baseImage: cvat.pth.facebookresearch.sam.vit_h:latest-gpu
+
+    directives:
+      preCopy:
+        - kind: USER
+          value: root
+        - kind: WORKDIR
+          value: /opt/nuclio/function
+
+  triggers:
+    myHttpTrigger:
+      numWorkers: 1
+      kind: 'http'
+      workerAvailabilityTimeoutMilliseconds: 10000
+      attributes:
+        maxRequestBodySize: 33554432
+
+  platform:
+    attributes:
+      restartPolicy:
+        name: always
+        maximumRetryCount: 3
+      mountMode: volume

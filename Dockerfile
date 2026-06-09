@@ -1,10 +1,20 @@
 ARG PIP_VERSION=24.0
 ARG BASE_IMAGE=ubuntu:22.04
+ARG APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/ubuntu
 
 FROM ${BASE_IMAGE} AS build-image-base
 
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends install -yq \
+ARG APT_MIRROR
+RUN MIRROR="${APT_MIRROR%/}" && \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|https\?://archive.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://security.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" /etc/apt/sources.list; \
+    fi && \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i "s|https\?://archive.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://security.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+
+RUN apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false --no-install-recommends install -yq \
         curl \
         g++ \
         gcc \
@@ -85,13 +95,39 @@ RUN --mount=type=cache,target=/root/.cache/pip/http-v2 \
     -r /tmp/cvat/requirements/${CVAT_CONFIGURATION}.txt \
     -w /tmp/wheelhouse
 
-FROM golang:1.25.5 AS build-smokescreen
+FROM ${BASE_IMAGE} AS build-smokescreen
 
-RUN git clone --filter=blob:none --no-checkout https://github.com/stripe/smokescreen.git
-RUN cd smokescreen && git checkout eb1ac09 && go build -o /tmp/smokescreen
+ARG APT_MIRROR
+ARG FETCH_PROXY
+ARG FETCH_NO_PROXY
+ARG GO_MODULE_PROXY=https://goproxy.cn,direct
+ARG GO_MODULE_SUMDB=sum.golang.google.cn
+RUN MIRROR="${APT_MIRROR%/}" && \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|https\?://archive.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://security.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" /etc/apt/sources.list; \
+    fi && \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i "s|https\?://archive.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://security.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+
+RUN apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false --no-install-recommends install -yq \
+        ca-certificates \
+        git \
+        golang-go \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN export http_proxy="${FETCH_PROXY}" https_proxy="${FETCH_PROXY}" HTTP_PROXY="${FETCH_PROXY}" HTTPS_PROXY="${FETCH_PROXY}" \
+        no_proxy="${FETCH_NO_PROXY}" NO_PROXY="${FETCH_NO_PROXY}" \
+        GOPROXY="${GO_MODULE_PROXY}" GOSUMDB="${GO_MODULE_SUMDB}" && \
+    git clone --filter=blob:none --no-checkout https://github.com/stripe/smokescreen.git && \
+    cd smokescreen && \
+    git checkout eb1ac09 && \
+    go build -o /tmp/smokescreen
 
 FROM ${BASE_IMAGE}
 
+ARG APT_MIRROR
 ARG http_proxy
 ARG https_proxy
 ARG no_proxy
@@ -107,13 +143,21 @@ ENV TERM=xterm \
     LC_ALL='C.UTF-8' \
     TZ=${TZ}
 
+RUN MIRROR="${APT_MIRROR%/}" && \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|https\?://archive.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://security.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" /etc/apt/sources.list; \
+    fi && \
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i "s|https\?://archive.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://security.ubuntu.com/ubuntu|${MIRROR}|g; s|https\?://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+
 ARG USER="django"
 ARG CVAT_CONFIGURATION="production"
 ENV DJANGO_SETTINGS_MODULE="cvat.settings.${CVAT_CONFIGURATION}"
 
 # Install necessary apt packages
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends install -yq \
+RUN apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false --no-install-recommends install -yq \
         bzip2 \
         ca-certificates \
         curl \
@@ -150,8 +194,8 @@ RUN adduser --uid=1000 --shell /bin/bash --disabled-password --gecos "" ${USER}
 
 ARG CLAM_AV="no"
 RUN if [ "$CLAM_AV" = "yes" ]; then \
-        apt-get update && \
-        apt-get --no-install-recommends install -yq \
+        apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false update && \
+        apt-get -o Acquire::http::Proxy=false -o Acquire::https::Proxy=false --no-install-recommends install -yq \
             clamav \
             libclamunrar9 && \
         sed -i 's/ReceiveTimeout 30/ReceiveTimeout 300/g' /etc/clamav/freshclam.conf && \

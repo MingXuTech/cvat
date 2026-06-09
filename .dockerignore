@@ -16,3 +16,8 @@
 /changelog.d
 /cvat-cli
 /profiles
+/dataset
+/deploy
+/*.zip
+/*.tar.gz
+/nuctl-*

@@ -11,6 +11,9 @@ import Text from 'antd/lib/typography/Text';
 import { renderOverlayShape } from './quality-tab.overlay';
 import { FrameGalleryState, GalleryItem, TileOverlayState, TilePreview } from './quality-tab.types';
 
+const FRAME_GALLERY_MODAL_Z_INDEX = 1000;
+const FRAME_PREVIEW_MODAL_Z_INDEX = FRAME_GALLERY_MODAL_Z_INDEX + 100;
+
 export type FrameGalleryModalProps = {
     frameGallery: FrameGalleryState | null;
     onClose: () => void;
@@ -26,6 +29,7 @@ export function FrameGalleryModal(props: FrameGalleryModalProps): JSX.Element {
             onCancel={onClose}
             footer={null}
             width={1000}
+            zIndex={FRAME_GALLERY_MODAL_Z_INDEX}
             title={frameGallery?.title || 'Frames'}
         >
             {frameGallery ? (
@@ -228,6 +232,7 @@ export function FramePreviewModal(props: FramePreviewModalProps): JSX.Element {
             onCancel={onClose}
             footer={null}
             width={900}
+            zIndex={FRAME_PREVIEW_MODAL_Z_INDEX}
             title={tilePreview?.title || 'Frame'}
         >
             {tilePreview ? (
@@ -235,6 +240,7 @@ export function FramePreviewModal(props: FramePreviewModalProps): JSX.Element {
                     <div style={{ position: 'relative' }}>
                         {tilePreview.src ? (
                             <img
+                                key={tilePreview.nonce}
                                 src={tilePreview.src}
                                 alt={tilePreview.title}
                                 style={{

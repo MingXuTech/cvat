@@ -31,6 +31,19 @@ def _to_cvat_mask(box: list[int], mask: np.ndarray) -> list[int]:
     return flattened
 
 
+def _mask_tight_box(mask: np.ndarray) -> list[int] | None:
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return None
+
+    return [
+        int(xs.min()),
+        int(ys.min()),
+        int(xs.max()),
+        int(ys.max()),
+    ]
+
+
 def _embedding_shape(num_values: int) -> tuple[int, int, int, int] | None:
     channels = 256
     if num_values <= 0 or num_values % channels:
@@ -131,14 +144,17 @@ class ModelHandler:
                 multimask_output=False,
             )
             mask = (masks[0].astype(np.uint8) * 255)
-            cvat_mask = _to_cvat_mask([x1, y1, x2, y2], mask)
+            tight_box = _mask_tight_box(mask)
+            if tight_box is None:
+                continue
+
+            cvat_mask = _to_cvat_mask(tight_box, mask)
 
             results.append(
                 {
                     "confidence": f"{score:.6f}",
                     "label": self.label,
                     "mask": cvat_mask,
-                    "points": [x1, y1, x2, y1, x2, y2, x1, y2],
                     "type": "mask",
                 }
             )

@@ -38,6 +38,10 @@ spec:
       value: http://172.20.2.148:8787/api/detect,http://172.20.2.148:8788/api/detect,http://172.20.2.148:8789/api/detect,http://172.20.2.148:8790/api/detect
     - name: RFDETR_REQUEST_TIMEOUT
       value: "300"
+    - name: RFDETR_DEFAULT_THRESHOLD
+      value: "0.2"
+    - name: RFDETR_MIN_THRESHOLD
+      value: "0.2"
     - name: RFDETR_MODEL_KEY
       value: ensemble12
     - name: RFDETR_FILTER_BUDSPORE

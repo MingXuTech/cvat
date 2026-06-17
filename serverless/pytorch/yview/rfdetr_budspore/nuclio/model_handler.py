@@ -62,6 +62,22 @@ def _parse_bool(value: str | None, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_threshold_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+
+    try:
+        threshold = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid {name}: {raw!r}") from exc
+
+    if not 0 <= threshold <= 1:
+        raise RuntimeError(f"{name} must be between 0 and 1")
+
+    return threshold
+
+
 def _parse_label_map(raw: str | None) -> dict[int, str]:
     if not raw:
         return {}
@@ -110,6 +126,11 @@ class ModelHandler:
         self.upstream_url_offset = self.worker_id % len(self.upstream_urls)
         self.request_timeout = float(os.getenv("RFDETR_REQUEST_TIMEOUT", "300"))
         self.model_key = os.getenv("RFDETR_MODEL_KEY", "new").strip() or "new"
+        self.min_threshold = _parse_threshold_env("RFDETR_MIN_THRESHOLD", 0.2)
+        self.default_threshold = _parse_threshold_env(
+            "RFDETR_DEFAULT_THRESHOLD",
+            self.min_threshold,
+        )
         self.label_map = _parse_label_map(os.getenv("RFDETR_LABEL_MAP"))
         raw_label = os.getenv("RFDETR_LABEL")
         self.label = (raw_label if raw_label is not None else "芽孢").strip()
@@ -150,7 +171,7 @@ class ModelHandler:
         threshold: float | None = None,
         sam_embedding: str | None = None,
     ) -> list[dict[str, object]]:
-        resolved_threshold = 0.5 if threshold is None else float(threshold)
+        resolved_threshold = self._resolve_threshold(threshold)
         image_bytes = base64.b64decode(image_base64)
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         image_array = np.array(image)
@@ -204,6 +225,10 @@ class ModelHandler:
             )
 
         return results
+
+    def _resolve_threshold(self, threshold: float | None) -> float:
+        requested_threshold = self.default_threshold if threshold is None else float(threshold)
+        return max(self.min_threshold, requested_threshold)
 
     def _detection_label(self, detection: dict[str, object]) -> str | None:
         for key in ("classId", "class_id", "category_id"):

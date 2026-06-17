@@ -4,7 +4,9 @@
 // SPDX-License-Identifier: MIT
 
 import './styles.scss';
-import React, { useEffect, useState } from 'react';
+import React, {
+    forwardRef, useCallback, useEffect, useImperativeHandle, useState,
+} from 'react';
 import { Row, Col } from 'antd/lib/grid';
 import Select from 'antd/lib/select';
 import Text from 'antd/lib/typography/Text';
@@ -29,6 +31,10 @@ interface Props {
     labels: Label[];
     dimension: DimensionType;
     runInference(model: MLModel, body: object): void;
+}
+
+export interface DetectorRunnerHandle {
+    runCurrentModel(): boolean;
 }
 
 type ServerMapping = Record<string, {
@@ -63,7 +69,7 @@ function convertMappingToServer(mapping: FullMapping): ServerMapping {
     ), {});
 }
 
-function DetectorRunner(props: Props): JSX.Element {
+function DetectorRunner(props: Props, ref: React.Ref<DetectorRunnerHandle>): JSX.Element {
     const {
         models, withCleanup, labels, dimension, runInference,
     } = props;
@@ -84,7 +90,39 @@ function DetectorRunner(props: Props): JSX.Element {
     const convertMasks2PolygonVisible = isDetector &&
         [LabelType.ANY, LabelType.MASK].includes(model.returnType);
 
-    const buttonEnabled = model && (isReId || (isDetector && mapping.length));
+    const buttonEnabled = !!model && (isReId || (isDetector && mapping.length > 0));
+
+    const runCurrentModel = useCallback((): boolean => {
+        if (!model || !buttonEnabled) {
+            return false;
+        }
+
+        const serverMapping = convertMappingToServer(mapping);
+        if (model.kind === ModelKind.DETECTOR) {
+            const body: AnnotateTaskRequestBody = {
+                type: 'annotate_task',
+                mapping: serverMapping,
+                cleanup,
+                conv_mask_to_poly: convertMasksToPolygons,
+                ...(detectorThreshold !== null ? { threshold: detectorThreshold } : {}),
+            };
+
+            runInference(model, body);
+            return true;
+        }
+
+        if (model.kind === ModelKind.REID) {
+            runInference(model, { threshold, max_distance: distance });
+            return true;
+        }
+
+        return false;
+    }, [
+        buttonEnabled, cleanup, convertMasksToPolygons, detectorThreshold,
+        distance, mapping, model, runInference, threshold,
+    ]);
+
+    useImperativeHandle(ref, () => ({ runCurrentModel }), [runCurrentModel]);
 
     useEffect(() => {
         const converted = labels.map((label) => ({
@@ -254,23 +292,7 @@ function DetectorRunner(props: Props): JSX.Element {
                         className='cvat-inference-run-button'
                         disabled={!buttonEnabled}
                         type='primary'
-                        onClick={() => {
-                            if (!model) return;
-                            const serverMapping = convertMappingToServer(mapping);
-                            if (model.kind === ModelKind.DETECTOR) {
-                                const body: AnnotateTaskRequestBody = {
-                                    type: 'annotate_task',
-                                    mapping: serverMapping,
-                                    cleanup,
-                                    conv_mask_to_poly: convertMasksToPolygons,
-                                    ...(detectorThreshold !== null ? { threshold: detectorThreshold } : {}),
-                                };
-
-                                runInference(model, body);
-                            } else if (model.kind === ModelKind.REID) {
-                                runInference(model, { threshold, max_distance: distance });
-                            }
-                        }}
+                        onClick={runCurrentModel}
                     >
                         Annotate
                     </Button>
@@ -280,4 +302,4 @@ function DetectorRunner(props: Props): JSX.Element {
     );
 }
 
-export default React.memo(DetectorRunner);
+export default React.memo(forwardRef(DetectorRunner));

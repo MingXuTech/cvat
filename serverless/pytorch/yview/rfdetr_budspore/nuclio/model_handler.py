@@ -56,6 +56,35 @@ def _embedding_shape(num_values: int) -> tuple[int, int, int, int] | None:
     return (1, channels, side, side)
 
 
+def _parse_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_label_map(raw: str | None) -> dict[int, str]:
+    if not raw:
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid RFDETR_LABEL_MAP: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise RuntimeError("RFDETR_LABEL_MAP must be a JSON object")
+
+    label_map: dict[int, str] = {}
+    for key, value in parsed.items():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            label_map[int(key)] = value.strip()
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid RFDETR_LABEL_MAP key: {key!r}") from exc
+    return label_map
+
+
 class ModelHandler:
     def __init__(self) -> None:
         self.upstream_url = os.getenv(
@@ -64,7 +93,12 @@ class ModelHandler:
         ).strip()
         self.request_timeout = float(os.getenv("RFDETR_REQUEST_TIMEOUT", "300"))
         self.model_key = os.getenv("RFDETR_MODEL_KEY", "new").strip() or "new"
-        self.label = os.getenv("RFDETR_LABEL", "芽孢").strip() or "芽孢"
+        self.label_map = _parse_label_map(os.getenv("RFDETR_LABEL_MAP"))
+        raw_label = os.getenv("RFDETR_LABEL")
+        self.label = (raw_label if raw_label is not None else "芽孢").strip()
+        if not self.label and not self.label_map:
+            self.label = "芽孢"
+        self.filter_budspore = _parse_bool(os.getenv("RFDETR_FILTER_BUDSPORE"), True)
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self.sam_checkpoint = os.getenv(
             "SAM_CHECKPOINT",
@@ -130,6 +164,9 @@ class ModelHandler:
             score = float(detection.get("score", 0))
             if score < resolved_threshold:
                 continue
+            label = self._detection_label(detection)
+            if label is None:
+                continue
 
             box = detection.get("box") or {}
             x1 = max(0, min(width - 1, int(round(float(box["x1"])))))
@@ -153,13 +190,30 @@ class ModelHandler:
             results.append(
                 {
                     "confidence": f"{score:.6f}",
-                    "label": self.label,
+                    "label": label,
                     "mask": cvat_mask,
                     "type": "mask",
                 }
             )
 
         return results
+
+    def _detection_label(self, detection: dict[str, object]) -> str | None:
+        for key in ("classId", "class_id", "category_id"):
+            if key not in detection:
+                continue
+            try:
+                class_id = int(detection[key])
+            except (TypeError, ValueError):
+                continue
+            if self.label_map:
+                return self.label_map.get(class_id)
+
+        label = detection.get("label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+
+        return self.label or None
 
     def _set_cached_sam_embedding(self, image_array: np.ndarray, blob: str | None) -> bool:
         if not blob:
@@ -192,7 +246,7 @@ class ModelHandler:
         self._boundary = f"----cvat-rfdetr-{uuid.uuid4().hex}"
         parts = [
             self._field("threshold", str(threshold)),
-            self._field("filter_budspore", "true"),
+            self._field("filter_budspore", "true" if self.filter_budspore else "false"),
             self._field("model_key", self.model_key),
             self._field("client_ids", json.dumps(["cvat-frame"])),
             self._file("files", "cvat-frame.jpg", "image/jpeg", image_bytes),

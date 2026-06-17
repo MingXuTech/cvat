@@ -12,7 +12,7 @@ def init_context(context):
 
 
 def handler(context, event):
-    context.logger.info("Run RF-DETR budspore detector")
+    context.logger.info("Run RF-DETR detector")
     data = event.body
     if isinstance(data, (bytes, bytearray)):
         data = data.decode("utf-8")

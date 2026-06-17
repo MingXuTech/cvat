@@ -1614,6 +1614,108 @@ class TestComplexFrameSetupCases(_LambdaTestCaseBase):
         annotations = response.json()
         self.assertEqual(annotations, {"version": 0, "tags": [], "shapes": [], "tracks": []})
 
+    def test_offline_detector_on_consensus_task_only_affects_consensus_jobs(self):
+        image_count = 6
+        segment_size = 2
+        task = self._create_task(
+            task_spec={
+                "name": "test_consensus_task",
+                "labels": [{"name": "car"}],
+                "segment_size": segment_size,
+                "consensus_replicas": 2,
+            },
+            data=self._generate_task_images(image_count),
+            owner=self.user,
+        )
+        labels = get_paginated_collection(
+            lambda page: self._get_request(
+                f"/api/labels?task_id={task['id']}&page={page}&sort=id", self.admin
+            )
+        )
+        jobs = get_paginated_collection(
+            lambda page: self._get_request(
+                f"/api/jobs?task_id={task['id']}&page={page}", self.admin
+            )
+        )
+
+        parent_jobs = [job for job in jobs if job["type"] == "annotation"]
+        consensus_jobs = [job for job in jobs if job["type"] == "consensus_replica"]
+        self.assertEqual(3, len(parent_jobs))
+        self.assertEqual(6, len(consensus_jobs))
+
+        response = self._post_request(
+            "/api/jobs",
+            self.admin,
+            data={
+                "type": "ground_truth",
+                "task_id": task["id"],
+                "frame_selection_method": "manual",
+                "frames": [0, 2, 4],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        gt_job = response.json()
+
+        shape_template = {
+            "attributes": [],
+            "group": None,
+            "label_id": labels[0]["id"],
+            "occluded": False,
+            "points": [0, 5, 5, 0],
+            "source": "manual",
+            "type": "rectangle",
+            "z_order": 0,
+        }
+
+        for job in [parent_jobs[0], consensus_jobs[0], gt_job]:
+            response = self._put_request(
+                f'/api/jobs/{job["id"]}/annotations',
+                self.admin,
+                data={
+                    "tags": [],
+                    "shapes": [{"frame": job["start_frame"], **shape_template}],
+                    "tracks": [],
+                },
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        data = {
+            "task": task["id"],
+            "cleanup": True,
+        }
+        self._run_offline_function(self.detector_function_id, data, self.user)
+
+        for job in parent_jobs:
+            response = self._get_request(f'/api/jobs/{job["id"]}/annotations', self.admin)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            annotations = response.json()
+            expected_count = 1 if job["id"] == parent_jobs[0]["id"] else 0
+            self.assertEqual(expected_count, len(annotations["shapes"]))
+            self.assertEqual(0, len(annotations["tags"]))
+            self.assertEqual(0, len(annotations["tracks"]))
+            if expected_count:
+                self.assertEqual("manual", annotations["shapes"][0]["source"])
+
+        for job in consensus_jobs:
+            response = self._get_request(f'/api/jobs/{job["id"]}/annotations', self.admin)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            annotations = response.json()
+            self.assertEqual(0, len(annotations["tags"]))
+            self.assertEqual(0, len(annotations["tracks"]))
+            self.assertEqual(
+                Counter(range(job["start_frame"], job["stop_frame"] + 1)),
+                Counter(shape["frame"] for shape in annotations["shapes"]),
+            )
+            self.assertTrue(all(shape["source"] == "auto" for shape in annotations["shapes"]))
+
+        response = self._get_request(f'/api/jobs/{gt_job["id"]}/annotations', self.admin)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        annotations = response.json()
+        self.assertEqual(1, len(annotations["shapes"]))
+        self.assertEqual("manual", annotations["shapes"][0]["source"])
+        self.assertEqual(0, len(annotations["tags"]))
+        self.assertEqual(0, len(annotations["tracks"]))
+
     def test_can_run_online_function_on_valid_task_frame(self):
         data = self.common_request_data.copy()
         requested_frame = self.task_rel_frame_range[4]

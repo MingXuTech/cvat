@@ -39,6 +39,7 @@ from cvat.apps.engine.frame_provider import TaskFrameProvider
 from cvat.apps.engine.log import ServerLogManager
 from cvat.apps.engine.models import (
     Job,
+    JobType,
     Label,
     RequestAction,
     RequestTarget,
@@ -68,7 +69,10 @@ from cvat.utils.http import make_requests_session
 
 slogger = ServerLogManager(__name__)
 
-RFDETR_BUDSPORE_FUNCTION_ID = "pth-yview-rfdetr-budspore"
+RFDETR_SAM_FUNCTION_IDS = {
+    "pth-yview-rfdetr-budspore",
+    "pth-yview-rfdetr-ensemble12",
+}
 _sam_embedding_cache_version: int | None = None
 
 
@@ -498,7 +502,7 @@ class LambdaFunction:
         if self.kind == FunctionKind.DETECTOR:
             frame = mandatory_arg("frame")
             payload.update({"image": self._get_image(db_task, frame)})
-            if self.id == RFDETR_BUDSPORE_FUNCTION_ID:
+            if self.id in RFDETR_SAM_FUNCTION_IDS:
                 try:
                     rfdetr_sam_embedding_blob = SAMEmbeddingCache.load_blob(
                         db_task,
@@ -1061,14 +1065,16 @@ class LambdaJob:
         conv_mask_to_poly: bool,
         *,
         db_job: Job | None = None,
+        progress_offset: int = 0,
+        progress_total: int = 1,
     ):
         collector = DetectionResultCollector(db_task, db_job)
 
         converter = DetectionResultConverter(db_task)
 
-        frame_set = cls._get_frame_set(db_task, db_job)
+        frame_set = list(cls._get_frame_set(db_task, db_job))
 
-        for frame in frame_set:
+        for frame_index, frame in enumerate(frame_set):
             if frame in db_task.data.deleted_frames:
                 continue
 
@@ -1084,7 +1090,11 @@ class LambdaJob:
                 converter=converter,
             )
 
-            progress = (frame + 1) / db_task.data.size
+            progress = cls._overall_progress(
+                (frame_index + 1) / len(frame_set),
+                progress_offset,
+                progress_total,
+            )
             if not cls._update_progress(progress):
                 break
 
@@ -1110,6 +1120,15 @@ class LambdaJob:
 
         return job.get_status()
 
+    @staticmethod
+    def _overall_progress(
+        local_progress: float, progress_offset: int, progress_total: int
+    ) -> float:
+        if progress_total <= 1:
+            return local_progress
+
+        return (progress_offset + local_progress) / progress_total
+
     @classmethod
     def _get_frame_set(cls, db_task: Task, db_job: Job | None):
         if db_job:
@@ -1124,6 +1143,14 @@ class LambdaJob:
 
         return frame_set
 
+    @staticmethod
+    def _get_consensus_replica_jobs(db_task: Task) -> list[Job]:
+        return list(
+            Job.objects.select_related("segment", "segment__task")
+            .filter(segment__task_id=db_task.id, type=JobType.CONSENSUS_REPLICA)
+            .order_by("id")
+        )
+
     @classmethod
     def _call_reid(
         cls,
@@ -1133,13 +1160,15 @@ class LambdaJob:
         max_distance: int,
         *,
         db_job: Job | None = None,
+        progress_offset: int = 0,
+        progress_total: int = 1,
     ):
         if db_job:
             data = dm.task.get_job_data(db_job.id)
         else:
             data = dm.task.get_task_data(db_task.id)
 
-        frame_set = cls._get_frame_set(db_task, db_job)
+        frame_set = list(cls._get_frame_set(db_task, db_job))
 
         boxes_by_frame = {frame: [] for frame in frame_set}
         shapes_without_boxes = []
@@ -1179,7 +1208,12 @@ class LambdaJob:
                         boxes1[idx1]["path_id"] = path_id
                         paths[path_id].append(boxes1[idx1])
 
-            if not LambdaJob._update_progress((i + 1) / len(frame_set)):
+            progress = cls._overall_progress(
+                (i + 1) / len(frame_set),
+                progress_offset,
+                progress_total,
+            )
+            if not LambdaJob._update_progress(progress):
                 break
 
         for box in boxes_by_frame[frame_set[-1]]:
@@ -1239,31 +1273,45 @@ class LambdaJob:
         else:
             db_task = Task.objects.get(pk=task)
 
+        consensus_replica_jobs = [] if db_job else cls._get_consensus_replica_jobs(db_task)
+
         if cleanup:
             if db_job:
                 dm.task.delete_job_data(db_job.id)
+            elif consensus_replica_jobs:
+                for consensus_job in consensus_replica_jobs:
+                    dm.task.delete_job_data(consensus_job.id, db_job=consensus_job)
             elif db_task:
                 dm.task.delete_task_data(db_task.id)
             else:
                 assert False
 
+        target_jobs = consensus_replica_jobs or [db_job]
+        progress_total = len(target_jobs)
+
         if function.kind == FunctionKind.DETECTOR:
-            cls._call_detector(
-                function,
-                db_task,
-                kwargs.get("threshold"),
-                kwargs.get("mapping"),
-                kwargs.get("conv_mask_to_poly"),
-                db_job=db_job,
-            )
+            for progress_offset, target_job in enumerate(target_jobs):
+                cls._call_detector(
+                    function,
+                    db_task,
+                    kwargs.get("threshold"),
+                    kwargs.get("mapping"),
+                    kwargs.get("conv_mask_to_poly"),
+                    db_job=target_job,
+                    progress_offset=progress_offset,
+                    progress_total=progress_total,
+                )
         elif function.kind == FunctionKind.REID:
-            cls._call_reid(
-                function,
-                db_task,
-                kwargs.get("threshold"),
-                kwargs.get("max_distance"),
-                db_job=db_job,
-            )
+            for progress_offset, target_job in enumerate(target_jobs):
+                cls._call_reid(
+                    function,
+                    db_task,
+                    kwargs.get("threshold"),
+                    kwargs.get("max_distance"),
+                    db_job=target_job,
+                    progress_offset=progress_offset,
+                    progress_total=progress_total,
+                )
 
 
 def return_response(success_code=status.HTTP_200_OK):

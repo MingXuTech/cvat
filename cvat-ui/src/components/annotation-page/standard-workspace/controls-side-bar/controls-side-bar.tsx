@@ -22,7 +22,7 @@ import CursorControl, { Props as CursorControlProps } from './cursor-control';
 import MoveControl, { Props as MoveControlProps } from './move-control';
 import FitControl, { Props as FitControlProps } from './fit-control';
 import ResizeControl, { Props as ResizeControlProps } from './resize-control';
-import ToolsControl from './tools-control';
+import ToolsControl, { runActiveDetectorForCurrentFrame } from './tools-control';
 import OpenCVControl from './opencv-control';
 import DrawRectangleControl, { Props as DrawRectangleControlProps } from './draw-rectangle-control';
 import DrawPolygonControl, { Props as DrawPolygonControlProps } from './draw-polygon-control';
@@ -294,6 +294,10 @@ export default function ControlsSideBarComponent(props: Props): JSX.Element {
                 return;
             }
 
+            if (action === 'draw' && runActiveDetectorForCurrentFrame()) {
+                return;
+            }
+
             canvasInstance.cancel();
             // repeatDrawShape gets all the latest parameters
             // and calls canvasInstance.draw() with them
@@ -304,6 +308,14 @@ export default function ControlsSideBarComponent(props: Props): JSX.Element {
                 redrawShape();
             }
         } else {
+            if (
+                activeControl === ActiveControl.AI_TOOLS &&
+                action === 'draw' &&
+                runActiveDetectorForCurrentFrame()
+            ) {
+                return;
+            }
+
             if ([ActiveControl.AI_TOOLS, ActiveControl.OPENCV_TOOLS].includes(activeControl)) {
                 // separated API method
                 canvasInstance.interact({ enabled: false });

@@ -37,12 +37,15 @@ import {
 } from 'reducers';
 import {
     interactWithCanvas,
+    updateActiveControl,
     switchNavigationBlocked as switchNavigationBlockedAction,
     fetchAnnotationsAsync,
     updateAnnotationsAsync,
     createAnnotationsAsync,
 } from 'actions/annotation-actions';
-import DetectorRunner, { AnnotateTaskRequestBody } from 'components/model-runner-modal/detector-runner';
+import DetectorRunner, {
+    AnnotateTaskRequestBody, DetectorRunnerHandle,
+} from 'components/model-runner-modal/detector-runner';
 import LabelSelector from 'components/label-selector/label-selector';
 import CVATTooltip from 'components/common/cvat-tooltip';
 import CVATMarkdown from 'components/common/cvat-markdown';
@@ -78,6 +81,7 @@ interface DispatchToProps {
     createAnnotations: (states: ObjectState[]) => Promise<void>;
     fetchAnnotations: () => Promise<void>;
     onInteractionStart: typeof interactWithCanvas;
+    updateActiveControl: typeof updateActiveControl;
     onSwitchToolsBlockerState: typeof switchToolsBlockerState;
     switchNavigationBlocked: typeof switchNavigationBlockedAction;
 }
@@ -85,6 +89,46 @@ interface DispatchToProps {
 const MIN_SUPPORTED_INTERACTOR_VERSION = 2;
 const core = getCore();
 const CustomPopover = withVisibilityHandling(Popover, 'tools-control');
+
+type AIToolsTabKey = 'interactors' | 'point-assistants' | 'detectors' | 'trackers';
+
+let runActiveDetectorShortcutCallback: null | (() => boolean) = null;
+
+function registerRunActiveDetectorShortcut(callback: null | (() => boolean)): void {
+    runActiveDetectorShortcutCallback = callback;
+}
+
+export function runActiveDetectorForCurrentFrame(): boolean {
+    return runActiveDetectorShortcutCallback?.() ?? false;
+}
+
+function getDefaultAIToolsTab(
+    interactors: MLModel[],
+    pointAssistants: MLModel[],
+    detectors: MLModel[],
+    trackers: MLModel[],
+): AIToolsTabKey {
+    if (interactors.length) return 'interactors';
+    if (pointAssistants.length) return 'point-assistants';
+    if (detectors.length) return 'detectors';
+    if (trackers.length) return 'trackers';
+    return 'detectors';
+}
+
+function hasAIToolsTabModels(
+    tab: AIToolsTabKey,
+    interactors: MLModel[],
+    pointAssistants: MLModel[],
+    detectors: MLModel[],
+    trackers: MLModel[],
+): boolean {
+    return (
+        (tab === 'interactors' && !!interactors.length) ||
+        (tab === 'point-assistants' && !!pointAssistants.length) ||
+        (tab === 'detectors' && !!detectors.length) ||
+        (tab === 'trackers' && !!trackers.length)
+    );
+}
 
 function mapStateToProps(state: CombinedState): StateToProps {
     const {
@@ -139,6 +183,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
 
 const mapDispatchToProps = {
     onInteractionStart: interactWithCanvas,
+    updateActiveControl,
     updateAnnotations: updateAnnotationsAsync,
     createAnnotations: createAnnotationsAsync,
     fetchAnnotations: fetchAnnotationsAsync,
@@ -155,6 +200,7 @@ interface TrackedShape {
 }
 
 interface State {
+    activeAIToolsTab: AIToolsTabKey;
     activeInteractor: MLModel | null;
     activePointAssistant: MLModel | null;
     activeLabelID: number | null;
@@ -231,6 +277,8 @@ function registerPlugin(): (callback: null | (() => void)) => void {
 const onRemoveAnnotations = registerPlugin();
 
 export class ToolsControlComponent extends React.PureComponent<Props, State> {
+    private detectorRunnerRef = React.createRef<DetectorRunnerHandle>();
+
     private interaction: {
         id: string | null;
         isAborted: boolean;
@@ -274,13 +322,14 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     public constructor(props: Props) {
         super(props);
 
-        const { interactors, pointAssistants } = props;
+        const { interactors, pointAssistants, detectors } = props;
         const supportedTrackers = this.getSupportedTrackers();
         const defaultPointAssistantPromptMode = pointAssistants[0]?.supportedPromptTypes.includes('point') ?
             'point' :
             'box';
 
         this.state = {
+            activeAIToolsTab: getDefaultAIToolsTab(interactors, pointAssistants, detectors, supportedTrackers),
             convertMasksToPolygons: false,
             startInteractingWithBox: false,
             activeInteractor: interactors.length ? interactors[0] : null,
@@ -325,6 +374,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         onRemoveAnnotations(() => {
             this.setState({ trackedShapes: [] });
         });
+        registerRunActiveDetectorShortcut(this.runActiveDetectorFromShortcut);
 
         this.setState({
             portals: this.collectTrackerPortals(),
@@ -337,10 +387,11 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     public componentDidUpdate(prevProps: Props, prevState: State): void {
         const {
             isActivated, defaultApproxPolyAccuracy, canvasInstance, states, toolsBlockerState,
-            interactors, pointAssistants,
+            interactors, pointAssistants, detectors, trackers,
         } = this.props;
         const {
             approxPolyAccuracy, mode, activeTracker, activeInteractor, activePointAssistant,
+            activeAIToolsTab,
         } = this.state;
 
         if (prevProps.states !== states || prevState.activeTracker !== activeTracker) {
@@ -351,9 +402,12 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         if (
             prevProps.interactors !== interactors ||
-            prevProps.pointAssistants !== pointAssistants
+            prevProps.pointAssistants !== pointAssistants ||
+            prevProps.detectors !== detectors ||
+            prevProps.trackers !== trackers
         ) {
             const nextState: Partial<State> = {};
+            const supportedTrackers = this.getSupportedTrackers();
 
             if (!activeInteractor && interactors.length) {
                 nextState.activeInteractor = interactors[0];
@@ -377,6 +431,12 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 nextState.pointAssistantPromptMode = pointAssistants[0]?.supportedPromptTypes.includes('point') ?
                     'point' :
                     'box';
+            }
+
+            if (!hasAIToolsTabModels(activeAIToolsTab, interactors, pointAssistants, detectors, supportedTrackers)) {
+                nextState.activeAIToolsTab = getDefaultAIToolsTab(
+                    interactors, pointAssistants, detectors, supportedTrackers,
+                );
             }
 
             if (Object.keys(nextState).length) {
@@ -472,6 +532,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     public componentWillUnmount(): void {
         const { canvasInstance } = this.props;
         onRemoveAnnotations(null);
+        registerRunActiveDetectorShortcut(null);
         canvasInstance.html().removeEventListener('canvas.interacted', this.interactionListener);
         canvasInstance.html().removeEventListener('canvas.canceled', this.cancelListener);
     }
@@ -480,6 +541,28 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         const { trackers } = this.props;
         return trackers.filter((tracker: MLModel) => tracker.supportedShapeTypes!.includes(ShapeType.RECTANGLE));
     }
+
+    private runActiveDetectorFromShortcut = (): boolean => {
+        const { updateActiveControl: updateActiveControlProp } = this.props;
+        const { activeAIToolsTab, fetching } = this.state;
+
+        if (activeAIToolsTab !== 'detectors') {
+            return false;
+        }
+
+        if (fetching) {
+            return true;
+        }
+
+        const started = this.detectorRunnerRef.current?.runCurrentModel() ?? false;
+        if (started) {
+            updateActiveControlProp(ActiveControl.AI_TOOLS);
+        } else {
+            message.warning('Select a detector and configure label mapping first');
+        }
+
+        return true;
+    };
 
     private contextmenuDisabler = (e: MouseEvent): void => {
         if (
@@ -1819,6 +1902,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     private renderDetectorBlock(): JSX.Element {
         const {
             jobInstance, detectors, curZOrder, frame, labels, createAnnotations,
+            updateActiveControl: updateActiveControlProp,
         } = this.props;
 
         if (!detectors.length) {
@@ -1835,6 +1919,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         return (
             <DetectorRunner
+                ref={this.detectorRunnerRef}
                 withCleanup={false}
                 models={detectors}
                 labels={labels}
@@ -1847,6 +1932,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     }
 
                     try {
+                        updateActiveControlProp(ActiveControl.AI_TOOLS);
                         this.setState({ mode: 'detection', fetching: true });
 
                         // The function call endpoint doesn't support the cleanup parameter.
@@ -1912,6 +1998,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         });
                     } finally {
                         this.setState({ fetching: false });
+                        updateActiveControlProp(ActiveControl.CURSOR);
                     }
                 }}
             />
@@ -1920,6 +2007,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private renderPopoverContent(): JSX.Element {
         const { interactors, pointAssistants } = this.props;
+        const { activeAIToolsTab } = this.state;
 
         return (
             <div className='cvat-tools-control-popover-content'>
@@ -1931,6 +2019,10 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     </Col>
                 </Row>
                 <Tabs
+                    activeKey={activeAIToolsTab}
+                    onChange={(key: string): void => {
+                        this.setState({ activeAIToolsTab: key as AIToolsTabKey });
+                    }}
                     type='card'
                     tabBarGutter={8}
                     items={[

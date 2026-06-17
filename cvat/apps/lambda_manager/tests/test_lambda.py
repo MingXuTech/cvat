@@ -1329,6 +1329,61 @@ class TestComplexFrameSetupCases(_LambdaTestCaseBase):
             },
         )
 
+    def test_offline_detector_skips_shapes_overlapping_existing_annotations(self):
+        requested_frames = list(self.task_rel_frame_range)
+        overlapping_frame = requested_frames[0]
+        non_overlapping_frame = requested_frames[1]
+        shape_template = {
+            "attributes": [],
+            "group": None,
+            "label_id": self.labels[0]["id"],
+            "occluded": False,
+            "source": "manual",
+            "type": "rectangle",
+            "z_order": 0,
+        }
+        response = self._put_request(
+            f'/api/tasks/{self.task["id"]}/annotations',
+            self.admin,
+            data={
+                "tags": [],
+                "shapes": [
+                    {
+                        "frame": overlapping_frame,
+                        "points": [2, 2, 16, 16],
+                        **shape_template,
+                    },
+                    {
+                        "frame": non_overlapping_frame,
+                        "points": [40, 40, 45, 45],
+                        **shape_template,
+                    },
+                ],
+                "tracks": [],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        data = self.common_request_data.copy()
+        data["cleanup"] = False
+        self._run_offline_function(self.detector_function_id, data, self.user)
+
+        response = self._get_request(f'/api/tasks/{self.task["id"]}/annotations', self.admin)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        annotations = response.json()
+        shapes_by_frame = {}
+        for shape in annotations["shapes"]:
+            shapes_by_frame.setdefault(shape["frame"], []).append(shape)
+
+        self.assertEqual(len(requested_frames) + 1, len(annotations["shapes"]))
+        self.assertEqual(1, len(shapes_by_frame[overlapping_frame]))
+        self.assertEqual("manual", shapes_by_frame[overlapping_frame][0]["source"])
+        self.assertEqual(2, len(shapes_by_frame[non_overlapping_frame]))
+        self.assertEqual(
+            Counter({"manual": 1, "auto": 1}),
+            Counter(shape["source"] for shape in shapes_by_frame[non_overlapping_frame]),
+        )
+
     def test_can_run_offline_reid_function_on_whole_task(self):
         # Add starting shapes to be tracked on following frames
         requested_frame_range = self.task_rel_frame_range
@@ -1726,6 +1781,41 @@ class TestComplexFrameSetupCases(_LambdaTestCaseBase):
 
         annotations = response.json()
         self.assertEqual(1, len(annotations["shapes"]))
+
+    def test_online_detector_skips_shapes_overlapping_existing_annotations(self):
+        requested_frame = self.task_rel_frame_range[4]
+        response = self._put_request(
+            f'/api/tasks/{self.task["id"]}/annotations',
+            self.admin,
+            data={
+                "tags": [],
+                "shapes": [
+                    {
+                        "attributes": [],
+                        "frame": requested_frame,
+                        "group": None,
+                        "label_id": self.labels[0]["id"],
+                        "occluded": False,
+                        "points": [2, 2, 16, 16],
+                        "source": "manual",
+                        "type": "rectangle",
+                        "z_order": 0,
+                    },
+                ],
+                "tracks": [],
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        data = self.common_request_data.copy()
+        data["cleanup"] = False
+        data["frame"] = requested_frame
+
+        response = self._run_online_function(self.detector_function_id, data, self.user)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        annotations = response.json()
+        self.assertEqual(0, len(annotations["shapes"]))
 
     def test_can_run_online_function_on_invalid_task_frame(self):
         data = self.common_request_data.copy()

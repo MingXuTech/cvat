@@ -356,6 +356,8 @@ NUCLIO = {
 
 assert NUCLIO["INVOKE_METHOD"] in {"dashboard", "direct"}
 
+CVAT_DETECTOR_MAX_WORKERS = max(1, int(os.getenv("CVAT_DETECTOR_MAX_WORKERS", 1)))
+
 RQ_SHOW_ADMIN_LINK = True
 RQ_EXCEPTION_HANDLERS = [
     "cvat.apps.engine.views.rq_exception_handler",

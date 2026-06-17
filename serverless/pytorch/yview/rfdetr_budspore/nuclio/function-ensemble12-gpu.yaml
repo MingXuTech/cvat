@@ -27,13 +27,15 @@ spec:
   eventTimeout: 600s
   env:
     - name: NVIDIA_VISIBLE_DEVICES
-      value: "1"
+      value: "0,1,2,5"
     - name: CUDA_VISIBLE_DEVICES
-      value: "0"
+      value: "0,1,2,3"
     - name: NVIDIA_DRIVER_CAPABILITIES
       value: compute,utility
     - name: RFDETR_UPSTREAM_URL
       value: http://172.20.2.148:8787/api/detect
+    - name: RFDETR_UPSTREAM_URLS
+      value: http://172.20.2.148:8787/api/detect,http://172.20.2.148:8788/api/detect,http://172.20.2.148:8789/api/detect,http://172.20.2.148:8790/api/detect
     - name: RFDETR_REQUEST_TIMEOUT
       value: "300"
     - name: RFDETR_MODEL_KEY
@@ -56,9 +58,9 @@ spec:
     directives:
       preCopy:
         - kind: ENV
-          value: NVIDIA_VISIBLE_DEVICES=1
+          value: NVIDIA_VISIBLE_DEVICES=0,1,2,5
         - kind: ENV
-          value: CUDA_VISIBLE_DEVICES=0
+          value: CUDA_VISIBLE_DEVICES=0,1,2,3
         - kind: ENV
           value: NVIDIA_DRIVER_CAPABILITIES=compute,utility
         - kind: USER
@@ -68,7 +70,7 @@ spec:
 
   triggers:
     myHttpTrigger:
-      numWorkers: 1
+      numWorkers: 4
       kind: 'http'
       workerAvailabilityTimeoutMilliseconds: 10000
       attributes:

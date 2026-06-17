@@ -85,12 +85,29 @@ def _parse_label_map(raw: str | None) -> dict[int, str]:
     return label_map
 
 
+def _parse_upstream_urls() -> list[str]:
+    raw_urls = os.getenv("RFDETR_UPSTREAM_URLS", "").strip()
+    if raw_urls:
+        urls = [url.strip() for url in raw_urls.split(",") if url.strip()]
+    else:
+        urls = [
+            os.getenv(
+                "RFDETR_UPSTREAM_URL",
+                "http://host.docker.internal:8787/api/detect",
+            ).strip()
+        ]
+
+    if not urls:
+        raise RuntimeError("RFDETR_UPSTREAM_URLS must contain at least one URL")
+
+    return urls
+
+
 class ModelHandler:
     def __init__(self) -> None:
-        self.upstream_url = os.getenv(
-            "RFDETR_UPSTREAM_URL",
-            "http://host.docker.internal:8787/api/detect",
-        ).strip()
+        self.worker_id = _get_nuclio_worker_id()
+        self.upstream_urls = _parse_upstream_urls()
+        self.upstream_url_offset = self.worker_id % len(self.upstream_urls)
         self.request_timeout = float(os.getenv("RFDETR_REQUEST_TIMEOUT", "300"))
         self.model_key = os.getenv("RFDETR_MODEL_KEY", "new").strip() or "new"
         self.label_map = _parse_label_map(os.getenv("RFDETR_LABEL_MAP"))
@@ -109,6 +126,12 @@ class ModelHandler:
         sam_model = sam_model_registry[self.sam_model_type](checkpoint=self.sam_checkpoint)
         sam_model.to(device=self.device)
         self.predictor = SamPredictor(sam_model)
+        print(
+            "RF-DETR+SAM worker "
+            f"{self.worker_id} upstream={self._ordered_upstream_urls()[0]} "
+            f"all_upstreams={self.upstream_urls}",
+            flush=True,
+        )
 
     def _resolve_device(self) -> torch.device:
         if torch.cuda.is_available():
@@ -133,23 +156,7 @@ class ModelHandler:
         image_array = np.array(image)
         height, width = image_array.shape[:2]
 
-        request = urllib.request.Request(
-            self.upstream_url,
-            data=self._multipart_body(image_bytes, resolved_threshold),
-            headers={"Content-Type": f"multipart/form-data; boundary={self._boundary}"},
-            method="POST",
-        )
-
-        try:
-            with self.opener.open(request, timeout=self.request_timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"RF-DETR upstream returned HTTP {exc.code}: {detail[:500]}"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Cannot reach RF-DETR upstream: {exc}") from exc
+        body = self._call_upstream(image_bytes, resolved_threshold)
 
         if not body.get("ok", False):
             raise RuntimeError(f"RF-DETR upstream failed: {body.get('error', body)}")
@@ -215,6 +222,33 @@ class ModelHandler:
 
         return self.label or None
 
+    def _ordered_upstream_urls(self) -> list[str]:
+        return self.upstream_urls[self.upstream_url_offset :] + self.upstream_urls[
+            : self.upstream_url_offset
+        ]
+
+    def _call_upstream(self, image_bytes: bytes, threshold: float) -> dict[str, object]:
+        errors = []
+        for upstream_url in self._ordered_upstream_urls():
+            body, boundary = self._multipart_body(image_bytes, threshold)
+            request = urllib.request.Request(
+                upstream_url,
+                data=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                method="POST",
+            )
+
+            try:
+                with self.opener.open(request, timeout=self.request_timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                errors.append(f"{upstream_url}: HTTP {exc.code}: {detail[:500]}")
+            except urllib.error.URLError as exc:
+                errors.append(f"{upstream_url}: {exc}")
+
+        raise RuntimeError("Cannot reach RF-DETR upstreams: " + " | ".join(errors))
+
     def _set_cached_sam_embedding(self, image_array: np.ndarray, blob: str | None) -> bool:
         if not blob:
             return False
@@ -242,28 +276,35 @@ class ModelHandler:
             print(f"Cannot reuse cached SAM embedding, fallback to set_image: {exc}", flush=True)
             return False
 
-    def _multipart_body(self, image_bytes: bytes, threshold: float) -> bytes:
-        self._boundary = f"----cvat-rfdetr-{uuid.uuid4().hex}"
+    def _multipart_body(self, image_bytes: bytes, threshold: float) -> tuple[bytes, str]:
+        boundary = f"----cvat-rfdetr-{uuid.uuid4().hex}"
         parts = [
-            self._field("threshold", str(threshold)),
-            self._field("filter_budspore", "true" if self.filter_budspore else "false"),
-            self._field("model_key", self.model_key),
-            self._field("client_ids", json.dumps(["cvat-frame"])),
-            self._file("files", "cvat-frame.jpg", "image/jpeg", image_bytes),
+            self._field(boundary, "threshold", str(threshold)),
+            self._field(boundary, "filter_budspore", "true" if self.filter_budspore else "false"),
+            self._field(boundary, "model_key", self.model_key),
+            self._field(boundary, "client_ids", json.dumps(["cvat-frame"])),
+            self._file(boundary, "files", "cvat-frame.jpg", "image/jpeg", image_bytes),
         ]
-        closing = f"--{self._boundary}--\r\n".encode("utf-8")
-        return b"".join(parts) + closing
+        closing = f"--{boundary}--\r\n".encode("utf-8")
+        return b"".join(parts) + closing, boundary
 
-    def _field(self, name: str, value: str) -> bytes:
+    def _field(self, boundary: str, name: str, value: str) -> bytes:
         return (
-            f"--{self._boundary}\r\n"
+            f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
             f"{value}\r\n"
         ).encode("utf-8")
 
-    def _file(self, name: str, filename: str, content_type: str, data: bytes) -> bytes:
+    def _file(
+        self,
+        boundary: str,
+        name: str,
+        filename: str,
+        content_type: str,
+        data: bytes,
+    ) -> bytes:
         header = (
-            f"--{self._boundary}\r\n"
+            f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
             f"Content-Type: {content_type}\r\n\r\n"
         ).encode("utf-8")

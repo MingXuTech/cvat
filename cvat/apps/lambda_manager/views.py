@@ -9,6 +9,8 @@ import base64
 import json
 import os
 import textwrap
+from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import timedelta
 from functools import wraps
@@ -22,6 +24,7 @@ import rq
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.signing import BadSignature, TimestampSigner
+from django.db import close_old_connections
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiParameter,
@@ -74,6 +77,8 @@ RFDETR_SAM_FUNCTION_IDS = {
     "pth-yview-rfdetr-ensemble12",
 }
 _sam_embedding_cache_version: int | None = None
+DETECTION_DUPLICATE_IOU_THRESHOLD = 0.5
+BBox = tuple[float, float, float, float]
 
 
 def _get_sam_embedding_cache_version(gateway: "LambdaGateway") -> int:
@@ -83,6 +88,104 @@ def _get_sam_embedding_cache_version(gateway: "LambdaGateway") -> int:
         _sam_embedding_cache_version = gateway.get(SAM_EMBEDDING_FUNCTION_ID).version
 
     return _sam_embedding_cache_version
+
+
+def _shape_bbox(shape: dict[str, Any]) -> BBox | None:
+    points = shape.get("points") or []
+    if len(points) < 4:
+        return None
+
+    if str(shape.get("type")) == str(ShapeType.MASK):
+        coords = points[-4:]
+    else:
+        coords = points
+
+    xs = [float(coords[idx]) for idx in range(0, len(coords) - 1, 2)]
+    ys = [float(coords[idx]) for idx in range(1, len(coords), 2)]
+
+    if not xs or not ys:
+        return None
+
+    xtl, xbr = min(xs), max(xs)
+    ytl, ybr = min(ys), max(ys)
+
+    if xtl == xbr or ytl == ybr:
+        return None
+
+    return xtl, ytl, xbr, ybr
+
+
+def _bbox_iou(first: BBox, second: BBox) -> float:
+    inter_width = min(first[2], second[2]) - max(first[0], second[0])
+    inter_height = min(first[3], second[3]) - max(first[1], second[1])
+
+    if inter_width <= 0 or inter_height <= 0:
+        return 0
+
+    intersection = inter_width * inter_height
+    first_area = (first[2] - first[0]) * (first[3] - first[1])
+    second_area = (second[2] - second[0]) * (second[3] - second[1])
+    union = first_area + second_area - intersection
+
+    return intersection / union if union > 0 else 0
+
+
+class DetectionShapeDeduplicator:
+    def __init__(self, annotation_data: dict[str, Any] | None = None) -> None:
+        self._shape_bboxes_by_key: defaultdict[tuple[int, int], list[BBox]] = defaultdict(
+            list
+        )
+
+        for shape in (annotation_data or {}).get("shapes", []):
+            self.add(shape)
+
+    @classmethod
+    def from_task(cls, db_task: Task, db_job: Job | None = None) -> "DetectionShapeDeduplicator":
+        if db_job:
+            annotation_data = dm.task.get_job_data(db_job.id)
+        else:
+            annotation_data = dm.task.get_task_data(db_task.id)
+
+        return cls(annotation_data)
+
+    def filter_new_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        filtered_shapes = []
+
+        for shape in data["shapes"]:
+            if self.has_duplicate(shape):
+                continue
+
+            filtered_shapes.append(shape)
+            self.add(shape)
+
+        if len(filtered_shapes) == len(data["shapes"]):
+            return data
+
+        filtered_data = data.copy()
+        filtered_data["shapes"] = filtered_shapes
+        return filtered_data
+
+    def has_duplicate(self, shape: dict[str, Any]) -> bool:
+        bbox = _shape_bbox(shape)
+        if bbox is None:
+            return False
+
+        return any(
+            _bbox_iou(bbox, existing_bbox) >= DETECTION_DUPLICATE_IOU_THRESHOLD
+            for existing_bbox in self._shape_bboxes_by_key[self._key(shape)]
+        )
+
+    def add(self, shape: dict[str, Any]) -> None:
+        if shape.get("outside", False):
+            return
+
+        bbox = _shape_bbox(shape)
+        if bbox is not None:
+            self._shape_bboxes_by_key[self._key(shape)].append(bbox)
+
+    @staticmethod
+    def _key(shape: dict[str, Any]) -> tuple[int, int]:
+        return int(shape["frame"]), int(shape["label_id"])
 
 
 class LambdaGateway:
@@ -333,6 +436,7 @@ class LambdaFunction:
         is_interactive: bool | None = False,
         request: ExtendedRequest | None = None,
         converter: DetectionResultConverter | None = None,
+        deduplicate_existing: bool = False,
     ):
         if db_job is not None and db_job.get_task_id() != db_task.id:
             raise ValidationError(
@@ -706,6 +810,10 @@ class LambdaFunction:
                 frame=mandatory_arg("frame"),
                 annotations=response_filtered,
             )
+            if deduplicate_existing and not data.get("cleanup", False):
+                response = DetectionShapeDeduplicator.from_task(
+                    db_task, db_job=db_job
+                ).filter_new_data(response)
         elif self.kind == FunctionKind.TRACKER:
             if "shapes" in response and not self.supported_shape_types:
                 response["shapes"] = [
@@ -960,10 +1068,12 @@ class DetectionResultCollector:
     def __init__(self, task: Task, job: Job | None) -> None:
         self._task = task
         self._job = job
+        self._deduplicator = DetectionShapeDeduplicator.from_task(task, db_job=job)
 
         self._reset()
 
     def add(self, data: dict) -> None:
+        data = self._deduplicator.filter_new_data(data)
         self._data["tags"] += data["tags"]
         self._data["shapes"] += data["shapes"]
 
@@ -1073,40 +1183,105 @@ class LambdaJob:
         converter = DetectionResultConverter(db_task)
 
         frame_set = list(cls._get_frame_set(db_task, db_job))
+        frame_set = [frame for frame in frame_set if frame not in db_task.data.deleted_frames]
+        max_workers = min(cls._get_detector_max_workers(), len(frame_set))
 
-        for frame_index, frame in enumerate(frame_set):
-            if frame in db_task.data.deleted_frames:
-                continue
+        if not frame_set:
+            return
 
-            annotations = function.invoke(
-                db_task,
-                db_job=db_job,
-                data={
-                    "frame": frame,
-                    "mapping": mapping,
-                    "threshold": threshold,
-                    "conv_mask_to_poly": conv_mask_to_poly,
-                },
-                converter=converter,
-            )
+        def run_frame(frame: int) -> dict:
+            close_old_connections()
+            try:
+                return function.invoke(
+                    db_task,
+                    db_job=db_job,
+                    data={
+                        "frame": frame,
+                        "mapping": mapping,
+                        "threshold": threshold,
+                        "conv_mask_to_poly": conv_mask_to_poly,
+                    },
+                    converter=converter,
+                )
+            finally:
+                close_old_connections()
 
-            progress = cls._overall_progress(
-                (frame_index + 1) / len(frame_set),
-                progress_offset,
-                progress_total,
-            )
-            if not cls._update_progress(progress):
-                break
+        if max_workers <= 1:
+            for frame_index, frame in enumerate(frame_set):
+                annotations = run_frame(frame)
 
-            collector.add(annotations)
+                progress = cls._overall_progress(
+                    (frame_index + 1) / len(frame_set),
+                    progress_offset,
+                    progress_total,
+                )
+                if not cls._update_progress(progress):
+                    break
 
-            # Accumulate data during 100 frames before submitting results.
-            # It is optimization to make fewer calls to our server. Also
-            # it isn't possible to keep all results in memory.
-            if frame and frame % 100 == 0:
-                collector.submit()
+                collector.add(annotations)
+
+                # Accumulate data during 100 frames before submitting results.
+                # It is optimization to make fewer calls to our server. Also
+                # it isn't possible to keep all results in memory.
+                if (frame_index + 1) % 100 == 0:
+                    collector.submit()
+
+            collector.submit()
+            return
+
+        next_frame_index = 0
+        completed_frames = 0
+        should_stop = False
+        pending = {}
+
+        def submit_next_frame(executor: ThreadPoolExecutor) -> None:
+            nonlocal next_frame_index
+            if next_frame_index >= len(frame_set):
+                return
+
+            frame = frame_set[next_frame_index]
+            pending[executor.submit(run_frame, frame)] = frame
+            next_frame_index += 1
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for _ in range(max_workers):
+                submit_next_frame(executor)
+
+            while pending and not should_stop:
+                done, _not_done = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    pending.pop(future)
+                    annotations = future.result()
+                    completed_frames += 1
+
+                    progress = cls._overall_progress(
+                        completed_frames / len(frame_set),
+                        progress_offset,
+                        progress_total,
+                    )
+                    if not cls._update_progress(progress):
+                        should_stop = True
+                        break
+
+                    collector.add(annotations)
+
+                    # Accumulate data during 100 frames before submitting results.
+                    # It is optimization to make fewer calls to our server. Also
+                    # it isn't possible to keep all results in memory.
+                    if completed_frames % 100 == 0:
+                        collector.submit()
+
+                    submit_next_frame(executor)
+
+            if should_stop:
+                for future in pending:
+                    future.cancel()
 
         collector.submit()
+
+    @staticmethod
+    def _get_detector_max_workers() -> int:
+        return max(1, int(getattr(settings, "CVAT_DETECTOR_MAX_WORKERS", 1)))
 
     @staticmethod
     # progress is in [0, 1] range
@@ -1435,6 +1610,7 @@ class FunctionViewSet(viewsets.ViewSet):
             converter=converter,
             is_interactive=True,
             request=request,
+            deduplicate_existing=True,
         )
 
         handle_function_call(
